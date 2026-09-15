@@ -97,6 +97,16 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   verified_at TEXT
 );
+CREATE TABLE IF NOT EXISTS credential_evidence (
+  id TEXT PRIMARY KEY,
+  credential_id TEXT NOT NULL REFERENCES economic_credentials(id),
+  evidence_type TEXT NOT NULL,
+  reference_type TEXT NOT NULL,
+  reference_id TEXT NOT NULL,
+  verified INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(credential_id, evidence_type, reference_type, reference_id)
+);
 '''
 
 
@@ -129,7 +139,7 @@ def init_db():
         connection.execute('INSERT OR IGNORE INTO payments SELECT * FROM payments_legacy')
         connection.execute('DROP TABLE payments_legacy')
     credential_columns = {row['name'] for row in connection.execute('PRAGMA table_info(economic_credentials)').fetchall()}
-    for name, definition in [('credential_type', "TEXT NOT NULL DEFAULT 'ECONOMIC_CREDENTIAL'"), ('evidence_count', 'INTEGER NOT NULL DEFAULT 0'), ('verified_transaction_count', 'INTEGER NOT NULL DEFAULT 0'), ('updated_at', 'TEXT')]:
+    for name, definition in [('credential_type', "TEXT NOT NULL DEFAULT 'ECONOMIC_CREDENTIAL'"), ('evidence_count', 'INTEGER NOT NULL DEFAULT 0'), ('verified_transaction_count', 'INTEGER NOT NULL DEFAULT 0'), ('version', 'INTEGER NOT NULL DEFAULT 1'), ('status', "TEXT NOT NULL DEFAULT 'VERIFIED'"), ('fingerprint', 'TEXT'), ('updated_at', 'TEXT')]:
         if name not in credential_columns:
             connection.execute(f'ALTER TABLE economic_credentials ADD COLUMN {name} {definition}')
     connection.execute('PRAGMA foreign_keys = ON')

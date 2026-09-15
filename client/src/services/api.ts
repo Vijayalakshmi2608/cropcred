@@ -1,4 +1,4 @@
-import { demands as demoDemands, listings as demoListings, orders as demoOrders, harvests as demoHarvests, passport as demoPassport, currentFarmer } from '../data/mockData';
+import { demands as demoDemands, listings as demoListings, orders as demoOrders, harvests as demoHarvests, currentFarmer } from '../data/mockData';
 import type { Demand, Harvest, Listing, Order } from '../data/mockData';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -29,5 +29,8 @@ export async function createPaymentIntent(orderId: string, payerWallet: string) 
 export async function verifyPayment(orderId: string, signature: string, payerWallet: string) { return request<any>(`/orders/${orderId}/verify-payment`, { method: 'POST', body: JSON.stringify({ transaction_signature: signature, payer_wallet: payerWallet, network: 'devnet' }) }); }
 export async function cancelPayment(orderId: string) { return request<any>(`/orders/${orderId}/cancel-payment`, { method: 'POST' }); }
 export async function getPayment(orderId: string) { return request<any>(`/orders/${orderId}/payment`); }
-export async function getPassport(farmerId = 'farmer-01') { try { return await request<any>(`/farmers/${farmerId}/passport`); } catch { return demoPassport; } }
+export async function getPassport(farmerId = 'farmer-01') { return request<any>(`/farmers/${farmerId}/passport`); }
 export async function getEconomicCredential(farmerId = 'farmer-01') { return request<any>(`/farmers/${farmerId}/economic-credential`); }
+export async function getPassportActivity(farmerId = 'farmer-01') { return request<any[]>(`/farmers/${farmerId}/passport/activity`); }
+export async function shareCredential(credentialId: string, categories: string[]) { return request<any>(`/credentials/${credentialId}/share`, { method: 'POST', body: JSON.stringify({ categories }) }); }
+export async function getCredential(credentialId: string) { return request<any>(`/credentials/${credentialId}`); }

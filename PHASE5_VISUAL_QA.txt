@@ -1,0 +1,5 @@
+Phase 5 visual QA findings:
+- Desktop /passport renders a dark Economic Passport product hero, credential ID/version, wallet/network/fingerprint/anchor strip, evidence-derived metric cards, reliability cards, and proof relationship panel without overflow.
+- Mobile 390px /passport stacks the hero metadata and identity strip vertically; metric cards remain readable and the top bar remains usable.
+- Public /verify/CR-CRED-00001 renders a professional credential card with backend-derived status, credential ID, version, activity counts, fingerprint, and explicit language distinguishing transaction evidence from physical crop claims.
+- Seeded historical orders without verified payment rows correctly produce 0 payment proofs and PENDING_VERIFICATION rather than fabricated blockchain evidence.

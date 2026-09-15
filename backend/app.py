@@ -3,6 +3,7 @@ import re
 import json
 import urllib.request
 import urllib.error
+import hashlib
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from database import get_connection, init_db, seed_db
@@ -37,6 +38,7 @@ def row(query, params=()):
 
 def farmer_payload(item):
     if not item: return None
+    item = dict(item)
     item['primary_crops'] = item['primary_crops'].split(',') if isinstance(item.get('primary_crops'), str) else item.get('primary_crops', [])
     item['initials'] = ''.join(part[0] for part in item['name'].split()[:2]).upper()
     return item
@@ -84,6 +86,42 @@ def valid_solana_address(value):
 
 def explorer_url(signature):
     return f'https://explorer.solana.com/tx/{signature}?cluster=devnet'
+
+
+def credential_snapshot(connection, farmer_id):
+    farmer = connection.execute('SELECT * FROM farmers WHERE id=?', (farmer_id,)).fetchone()
+    if not farmer: return None
+    harvests = connection.execute("SELECT COUNT(*) AS count FROM harvests WHERE farmer_id=? AND status='VERIFIED'", (farmer_id,)).fetchone()['count']
+    sales = connection.execute("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,)).fetchone()['count']
+    payments_count = connection.execute("SELECT COUNT(*) AS count FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,)).fetchone()['count']
+    deliveries = connection.execute("SELECT COUNT(*) AS count FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.farmer_id=? AND d.status='DELIVERED'", (farmer_id,)).fetchone()['count']
+    trade_value = connection.execute("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,)).fetchone()['value']
+    total_orders = connection.execute('SELECT COUNT(*) AS count FROM orders WHERE farmer_id=?', (farmer_id,)).fetchone()['count']
+    canonical = {'farmer_id': farmer_id, 'harvests': harvests, 'sales': sales, 'payments': payments_count, 'deliveries': deliveries, 'trade_value': trade_value}
+    fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    credential = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone()
+    now = datetime.now().isoformat(timespec='seconds')
+    if credential:
+        version = credential['version'] if credential['fingerprint'] == fingerprint else credential['version'] + 1
+        connection.execute('''UPDATE economic_credentials SET version=?, status=?, fingerprint=?, credential_hash=?, evidence_count=?, verified_transaction_count=?, updated_at=? WHERE farmer_id=?''', (version, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, harvests + sales + payments_count + deliveries, payments_count, now, farmer_id))
+    else:
+        credential_id = f'CR-CRED-{farmer_id[-2:].upper()}'
+        connection.execute('''INSERT INTO economic_credentials (id,farmer_id,credential_id,credential_type,evidence_count,verified_transaction_count,version,status,fingerprint,credential_hash,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (f'credential-{farmer_id}', farmer_id, credential_id, 'ECONOMIC_CREDENTIAL', harvests + sales + payments_count + deliveries, payments_count, 1, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, now))
+    credential_row = connection.execute('SELECT id FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone()
+    evidence_rows = []
+    for item in connection.execute("SELECT id FROM harvests WHERE farmer_id=? AND status='VERIFIED'", (farmer_id,)).fetchall(): evidence_rows.append(('HARVEST_REGISTERED', 'harvest', item['id'], 1))
+    for item in connection.execute('SELECT id FROM orders WHERE farmer_id=?', (farmer_id,)).fetchall(): evidence_rows.append(('ORDER_CREATED', 'order', item['id'], 1))
+    for item in connection.execute("SELECT p.id FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,)).fetchall(): evidence_rows.append(('PAYMENT_VERIFIED', 'payment', item['id'], 1))
+    for item in connection.execute("SELECT d.id FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.farmer_id=? AND d.status='DELIVERED'", (farmer_id,)).fetchall(): evidence_rows.append(('DELIVERY_CONFIRMED', 'delivery', item['id'], 1))
+    for evidence_type, reference_type, reference_id, verified in evidence_rows:
+        connection.execute('INSERT OR IGNORE INTO credential_evidence (id,credential_id,evidence_type,reference_type,reference_id,verified) VALUES (?,?,?,?,?,?)', (f'{evidence_type.lower()}-{reference_id}', credential_row['id'], evidence_type, reference_type, reference_id, verified))
+    connection.commit()
+    return {'farmer': farmer_payload(farmer), 'verified_harvests': harvests, 'completed_sales': sales, 'verified_payments': payments_count, 'verified_deliveries': deliveries, 'verified_trade_value': trade_value, 'total_orders': total_orders, 'fulfillment_rate': round(deliveries / total_orders * 100) if total_orders else None}
+
+
+def credential_evidence(connection, farmer_id):
+    rows = connection.execute('''SELECT o.id AS order_id, o.created_at, o.quantity, o.unit, o.total_amount, o.buyer_name, o.payment_status, o.transaction_signature, h.id AS harvest_id, h.crop, h.harvest_date, d.status AS delivery_status, p.status AS blockchain_status, p.payer_wallet, p.recipient_wallet, p.amount_sol, p.verified_at FROM orders o JOIN harvests h ON h.id=o.harvest_id LEFT JOIN deliveries d ON d.order_id=o.id LEFT JOIN payments p ON p.order_id=o.id AND p.status='VERIFIED' WHERE o.farmer_id=? ORDER BY o.created_at DESC''', (farmer_id,)).fetchall()
+    return [dict(item) for item in rows]
 
 @app.get('/api/health')
 def health():
@@ -313,25 +351,37 @@ def get_payment(order_id):
 
 @app.get('/api/farmers/<farmer_id>/economic-credential')
 def get_economic_credential(farmer_id):
-    item = row('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,))
-    return ok(item) if item else fail('Economic credential not found', 404)
+    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); item = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); connection.close()
+    return ok({**dict(item), **snapshot}) if item and snapshot else fail('Economic credential not found', 404)
 
 @app.get('/api/credentials/<credential_id>')
 def get_credential(credential_id):
-    item = row('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,))
-    return ok(item) if item else fail('Credential not found', 404)
+    connection = get_connection(); item = connection.execute('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,)).fetchone()
+    if not item: connection.close(); return fail('Credential not found', 404)
+    snapshot = credential_snapshot(connection, item['farmer_id']); item = connection.execute('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,)).fetchone(); connection.close()
+    return ok({**dict(item), 'verified_harvests': snapshot['verified_harvests'], 'completed_sales': snapshot['completed_sales'], 'verified_payments': snapshot['verified_payments'], 'verified_deliveries': snapshot['verified_deliveries'], 'verified_trade_value': snapshot['verified_trade_value']})
+
+@app.get('/api/farmers/<farmer_id>/passport/activity')
+def get_passport_activity(farmer_id):
+    connection = get_connection(); rows = credential_evidence(connection, farmer_id); connection.close(); return ok(rows)
+
+@app.get('/api/farmers/<farmer_id>/passport/evidence')
+def get_passport_evidence(farmer_id):
+    connection = get_connection(); rows = credential_evidence(connection, farmer_id); connection.close(); return ok(rows)
+
+@app.post('/api/credentials/<credential_id>/share')
+def share_credential(credential_id):
+    data = request.get_json(silent=True) or {}; allowed = {'harvests', 'sales', 'payments', 'deliveries'}; selected = [item for item in data.get('categories', list(allowed)) if item in allowed]
+    if not selected: return fail('Select at least one evidence category.')
+    item = row('SELECT credential_id, version, status, fingerprint, farmer_id FROM economic_credentials WHERE credential_id=?', (credential_id,))
+    if not item: return fail('Credential not found', 404)
+    return ok({'credential_id': item['credential_id'], 'version': item['version'], 'status': item['status'], 'fingerprint': item['fingerprint'], 'categories': selected, 'share_url': f'/verify/{item["credential_id"]}?categories={",".join(selected)}'})
 
 @app.get('/api/farmers/<farmer_id>/passport')
 def get_passport(farmer_id):
-    farmer = row('SELECT * FROM farmers WHERE id=?', (farmer_id,))
-    if not farmer: return fail('Farmer not found', 404)
-    verified = row("SELECT COUNT(*) AS count FROM harvests WHERE farmer_id=? AND status='VERIFIED'", (farmer_id,))['count']
-    completed = row("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,))['count']
-    payment_proofs = row("SELECT COUNT(*) AS count FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,))['count']
-    total_orders = row('SELECT COUNT(*) AS count FROM orders WHERE farmer_id=?', (farmer_id,))['count']
-    value = row("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,))['value']
-    fulfillment = round((row("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND status IN ('DELIVERED','COMPLETED')", (farmer_id,))['count'] / total_orders) * 100) if total_orders else 0
-    return ok({'farmer': farmer_payload(farmer), 'verified_harvests': verified, 'completed_sales': completed, 'completed_transactions': payment_proofs, 'payment_proofs': payment_proofs, 'fulfillment_rate': f'{fulfillment}%', 'verified_trade_value': f'₹{value:,.0f}', 'evidence': {'harvest': verified > 0, 'payment': payment_proofs > 0, 'delivery': fulfillment > 0, 'onchain_reference': payment_proofs > 0}})
+    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); evidence = credential_evidence(connection, farmer_id); credential = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); connection.close()
+    if not snapshot: return fail('Farmer not found', 404)
+    return ok({**snapshot, 'credential': dict(credential) if credential else None, 'activity': evidence})
 
 if __name__ == '__main__':
     init_db(); seed_db(); app.run(host='0.0.0.0', port=5000, debug=True)
