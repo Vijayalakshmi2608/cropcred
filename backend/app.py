@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from database import get_connection, init_db, seed_db
@@ -73,6 +74,21 @@ def get_farmers():
 def get_farmer(farmer_id):
     item = farmer_payload(row('SELECT * FROM farmers WHERE id=?', (farmer_id,)))
     return ok(item) if item else fail('Farmer not found', 404)
+
+@app.put('/api/farmers/<farmer_id>/wallet')
+def update_farmer_wallet(farmer_id):
+    data = request.get_json(silent=True) or {}
+    if 'wallet_address' not in data:
+        return fail('wallet_address is required.')
+    wallet_address = str(data.get('wallet_address') or '').strip()
+    if wallet_address and not re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]{32,44}', wallet_address):
+        return fail('Enter a valid Solana public wallet address.')
+    connection = get_connection()
+    if not connection.execute('SELECT id FROM farmers WHERE id=?', (farmer_id,)).fetchone():
+        connection.close(); return fail('Farmer not found', 404)
+    connection.execute('UPDATE farmers SET wallet_address=? WHERE id=?', (wallet_address or None, farmer_id))
+    connection.commit(); connection.close()
+    return ok({'wallet_address': wallet_address})
 
 @app.post('/api/farmers')
 def create_farmer():

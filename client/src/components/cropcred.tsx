@@ -27,6 +27,8 @@ import {
   Zap,
 } from 'lucide-react';
 import type { Demand, Harvest, Listing, Order } from '../data/mockData';
+import { NetworkBadge, SolanaWalletButton, WalletAddress } from './solana';
+import { useSolanaWallet } from '../contexts/SolanaWalletContext';
 
 export const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Sparkles },
@@ -59,7 +61,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 }
 
 export function Topbar({ title, subtitle, onMenu }: { title: string; subtitle?: string; onMenu: () => void }) {
-  return <header className="topbar"><div className="topbar-heading"><button className="mobile-menu" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button><div><div className="topbar-kicker">CropCred workspace</div><h1>{title}</h1>{subtitle && <span>{subtitle}</span>}</div></div><div className="topbar-actions"><label className="top-search"><Search size={16} /><input placeholder="Search activity" aria-label="Search activity" /></label><button className="icon-button has-dot" aria-label="Notifications"><Bell size={18} /></button><div className="wallet-chip"><span className="wallet-status" /> <span>Wallet not connected</span><ChevronDown size={14} /></div><div className="avatar">AK</div></div></header>;
+  const { connected, publicKey, network } = useSolanaWallet();
+  return <header className="topbar"><div className="topbar-heading"><button className="mobile-menu" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button><div><div className="topbar-kicker">CropCred workspace</div><h1>{title}</h1>{subtitle && <span>{subtitle}</span>}</div></div><div className="topbar-actions"><label className="top-search"><Search size={16} /><input placeholder="Search activity" aria-label="Search activity" /></label><button className="icon-button has-dot" aria-label="Notifications"><Bell size={18} /></button>{connected ? <div className="wallet-chip connected-chip"><span className="wallet-status" /> <span><strong><WalletAddress address={publicKey} /></strong><small><NetworkBadge wrong={network === 'wrong-network'} /></small></span><ChevronDown size={14} /></div> : <SolanaWalletButton compact />}<div className="avatar">AK</div></div></header>;
 }
 
 export function AppShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle?: string }) {
