@@ -1,11 +1,16 @@
 from datetime import datetime
 import re
+import json
+import urllib.request
+import urllib.error
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from database import get_connection, init_db, seed_db
 
 app = Flask(__name__)
 CORS(app, resources={r'/api/*': {'origins': '*'}})
+DEVNET_RPC = 'https://api.devnet.solana.com'
+DEMO_SOL_AMOUNT = 0.001
 
 
 def ok(data, status=200):
@@ -61,6 +66,24 @@ def order_payload(item):
     item['amount_label'] = f"₹{item['total_amount']:g}"
     item['wallet'] = 'Awaiting Solana transaction'
     return item
+
+
+def rpc_call(method, params):
+    payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode()
+    request = urllib.request.Request(DEVNET_RPC, data=payload, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=12) as response:
+        body = json.loads(response.read().decode())
+    if body.get('error'):
+        raise ValueError('Devnet RPC returned an error')
+    return body.get('result')
+
+
+def valid_solana_address(value):
+    return bool(value and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]{32,44}', str(value)))
+
+
+def explorer_url(signature):
+    return f'https://explorer.solana.com/tx/{signature}?cluster=devnet'
 
 @app.get('/api/health')
 def health():
@@ -196,7 +219,7 @@ def create_order():
     order_id = f"CR-ORD-{order_count + 232:05d}"
     total = quantity * listing['price_per_unit']
     connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature)
-      VALUES (?,?,?,?,?,?,?,?,'PLACED','PENDING',NULL)''', (order_id, listing['harvest_id'], listing['farmer_id'], data['buyer_name'], data.get('buyer_type', 'RETAILER'), quantity, listing['unit'], total))
+      VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, listing['harvest_id'], listing['farmer_id'], data['buyer_name'], data.get('buyer_type', 'RETAILER'), quantity, listing['unit'], total))
     connection.execute('UPDATE marketplace_listings SET quantity_available=quantity_available-? WHERE id=?', (quantity, data['listing_id']))
     connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING'))
     connection.commit()
@@ -223,16 +246,92 @@ def confirm_delivery(order_id):
     connection.commit(); created = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()); connection.close()
     return ok(order_payload(created))
 
+@app.post('/api/orders/<order_id>/payment-intent')
+def payment_intent(order_id):
+    data = request.get_json(silent=True) or {}
+    payer_wallet = str(data.get('payer_wallet', '')).strip()
+    if not valid_solana_address(payer_wallet): return fail('A valid buyer wallet is required.')
+    connection = get_connection()
+    order = connection.execute('SELECT o.*, f.wallet_address AS recipient_wallet FROM orders o JOIN farmers f ON f.id=o.farmer_id WHERE o.id=?', (order_id,)).fetchone()
+    if not order: connection.close(); return fail('Order not found', 404)
+    existing = connection.execute("SELECT * FROM payments WHERE order_id=? AND status='VERIFIED'", (order_id,)).fetchone()
+    if existing: connection.close(); return ok({'state': 'VERIFIED', 'payment': dict(existing), 'explorer_url': explorer_url(existing['transaction_signature'])})
+    processing = connection.execute("SELECT * FROM payments WHERE order_id=? AND status='PROCESSING'", (order_id,)).fetchone()
+    if processing: connection.close(); return fail('A payment is already processing for this order.', 409)
+    if order['status'] in {'PAID', 'COMPLETED'} or order['payment_status'] == 'PAID': connection.close(); return fail('This order has already been paid.', 409)
+    if not valid_solana_address(order['recipient_wallet']): connection.close(); return fail('This seller has not connected a settlement wallet yet.', 409)
+    payment_id = f'payment-{order_id}'
+    connection.execute('INSERT INTO payments (id,order_id,payer_wallet,recipient_wallet,amount_sol,network,status) VALUES (?,?,?,?,?,?,?)', (payment_id, order_id, payer_wallet, order['recipient_wallet'], DEMO_SOL_AMOUNT, 'devnet', 'PROCESSING'))
+    connection.execute("UPDATE orders SET status='PAYMENT_PROCESSING' WHERE id=?", (order_id,)); connection.commit(); connection.close()
+    return ok({'state': 'AWAITING_WALLET_APPROVAL', 'payment_id': payment_id, 'order_id': order_id, 'amount_sol': DEMO_SOL_AMOUNT, 'network': 'devnet', 'recipient_wallet': order['recipient_wallet']})
+
+@app.post('/api/orders/<order_id>/verify-payment')
+def verify_payment(order_id):
+    data = request.get_json(silent=True) or {}
+    signature = str(data.get('transaction_signature', '')).strip(); payer_wallet = str(data.get('payer_wallet', '')).strip()
+    if not signature or not valid_solana_address(payer_wallet) or data.get('network') != 'devnet': return fail('Payment signature, buyer wallet, and Devnet network are required.')
+    connection = get_connection()
+    order = connection.execute('SELECT o.*, f.wallet_address AS recipient_wallet FROM orders o JOIN farmers f ON f.id=o.farmer_id WHERE o.id=?', (order_id,)).fetchone()
+    payment = connection.execute("SELECT * FROM payments WHERE order_id=? AND status='PROCESSING'", (order_id,)).fetchone()
+    if not order: connection.close(); return fail('Order not found', 404)
+    if not payment or payment['payer_wallet'] != payer_wallet: connection.close(); return fail('Payment could not be verified.')
+    if not valid_solana_address(order['recipient_wallet']): connection.close(); return fail('Seller settlement wallet is missing or does not match.')
+    try:
+        tx = rpc_call('getTransaction', [signature, {'encoding': 'jsonParsed', 'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
+        if not tx or tx.get('meta', {}).get('err') is not None: raise ValueError()
+        account_keys = [item.get('pubkey') if isinstance(item, dict) else item for item in tx.get('transaction', {}).get('message', {}).get('accountKeys', [])]
+        valid_transfer = False
+        for instruction in tx.get('transaction', {}).get('message', {}).get('instructions', []):
+            parsed = instruction.get('parsed', {}) if isinstance(instruction, dict) else {}; info = parsed.get('info', {})
+            if parsed.get('type') == 'transfer' and info.get('source') == payer_wallet and info.get('destination') == order['recipient_wallet'] and int(info.get('lamports', 0)) >= int(DEMO_SOL_AMOUNT * 1_000_000_000): valid_transfer = True
+        if payer_wallet not in account_keys or not valid_transfer: raise ValueError()
+    except Exception:
+        connection.close(); return fail('Blockchain verification is temporarily unavailable. Your order remains unpaid until verification succeeds.')
+    now = datetime.now().isoformat(timespec='seconds')
+    connection.execute("UPDATE payments SET transaction_signature=?, status='VERIFIED', block_time=?, verified_at=? WHERE id=?", (signature, tx.get('blockTime'), now, payment['id']))
+    connection.execute("UPDATE orders SET status='PAID', payment_status='PAID', transaction_signature=? WHERE id=?", (signature, order_id))
+    connection.execute('UPDATE economic_credentials SET evidence_count=evidence_count+1, verified_transaction_count=verified_transaction_count+1, updated_at=? WHERE farmer_id=?', (now, order['farmer_id']))
+    connection.commit(); result = dict(connection.execute('SELECT * FROM payments WHERE id=?', (payment['id'],)).fetchone()); connection.close()
+    result['state'] = 'VERIFIED'; result['explorer_url'] = explorer_url(signature)
+    return ok(result)
+
+@app.post('/api/orders/<order_id>/cancel-payment')
+def cancel_payment(order_id):
+    connection = get_connection()
+    payment = connection.execute("SELECT id FROM payments WHERE order_id=? AND status='PROCESSING'", (order_id,)).fetchone()
+    if payment:
+        connection.execute("UPDATE payments SET status='FAILED' WHERE id=?", (payment['id'],))
+        connection.execute("UPDATE orders SET status='PENDING_PAYMENT' WHERE id=? AND payment_status='PENDING'", (order_id,))
+        connection.commit()
+    connection.close(); return ok({'state': 'FAILED', 'order_id': order_id})
+
+@app.get('/api/orders/<order_id>/payment')
+def get_payment(order_id):
+    item = row('SELECT * FROM payments WHERE order_id=?', (order_id,))
+    if item and item.get('transaction_signature'): item['explorer_url'] = explorer_url(item['transaction_signature'])
+    return ok(item)
+
+@app.get('/api/farmers/<farmer_id>/economic-credential')
+def get_economic_credential(farmer_id):
+    item = row('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,))
+    return ok(item) if item else fail('Economic credential not found', 404)
+
+@app.get('/api/credentials/<credential_id>')
+def get_credential(credential_id):
+    item = row('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,))
+    return ok(item) if item else fail('Credential not found', 404)
+
 @app.get('/api/farmers/<farmer_id>/passport')
 def get_passport(farmer_id):
     farmer = row('SELECT * FROM farmers WHERE id=?', (farmer_id,))
     if not farmer: return fail('Farmer not found', 404)
     verified = row("SELECT COUNT(*) AS count FROM harvests WHERE farmer_id=? AND status='VERIFIED'", (farmer_id,))['count']
-    completed = row("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND status='COMPLETED'", (farmer_id,))['count']
+    completed = row("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,))['count']
+    payment_proofs = row("SELECT COUNT(*) AS count FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,))['count']
     total_orders = row('SELECT COUNT(*) AS count FROM orders WHERE farmer_id=?', (farmer_id,))['count']
-    value = row("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE farmer_id=? AND status='COMPLETED'", (farmer_id,))['value']
+    value = row("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,))['value']
     fulfillment = round((row("SELECT COUNT(*) AS count FROM orders WHERE farmer_id=? AND status IN ('DELIVERED','COMPLETED')", (farmer_id,))['count'] / total_orders) * 100) if total_orders else 0
-    return ok({'farmer': farmer_payload(farmer), 'verified_harvests': verified, 'completed_sales': completed, 'completed_transactions': completed, 'fulfillment_rate': f'{fulfillment}%', 'verified_trade_value': f'₹{value:,.0f}', 'evidence': {'harvest': verified > 0, 'payment': completed > 0, 'delivery': fulfillment > 0, 'onchain_reference': None}})
+    return ok({'farmer': farmer_payload(farmer), 'verified_harvests': verified, 'completed_sales': completed, 'completed_transactions': payment_proofs, 'payment_proofs': payment_proofs, 'fulfillment_rate': f'{fulfillment}%', 'verified_trade_value': f'₹{value:,.0f}', 'evidence': {'harvest': verified > 0, 'payment': payment_proofs > 0, 'delivery': fulfillment > 0, 'onchain_reference': payment_proofs > 0}})
 
 if __name__ == '__main__':
     init_db(); seed_db(); app.run(host='0.0.0.0', port=5000, debug=True)

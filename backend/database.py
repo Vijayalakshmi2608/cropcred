@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS orders (
   quantity REAL NOT NULL CHECK(quantity > 0),
   unit TEXT NOT NULL,
   total_amount REAL NOT NULL CHECK(total_amount >= 0),
-  status TEXT NOT NULL CHECK(status IN ('PLACED','PROCESSING','OUT_FOR_DELIVERY','DELIVERED','COMPLETED','CANCELLED')),
+  status TEXT NOT NULL CHECK(status IN ('PLACED','PENDING_PAYMENT','PAYMENT_PROCESSING','PAID','PROCESSING','READY_FOR_DELIVERY','OUT_FOR_DELIVERY','DELIVERED','COMPLETED','PAYMENT_FAILED','CANCELLED')),
   payment_status TEXT NOT NULL CHECK(payment_status IN ('PENDING','PAID')),
   transaction_signature TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS economic_credentials (
   onchain_reference TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL UNIQUE REFERENCES orders(id),
+  payer_wallet TEXT NOT NULL,
+  recipient_wallet TEXT NOT NULL,
+  amount_sol REAL NOT NULL CHECK(amount_sol > 0),
+  network TEXT NOT NULL CHECK(network = 'devnet'),
+  transaction_signature TEXT UNIQUE,
+  status TEXT NOT NULL CHECK(status IN ('PROCESSING','VERIFIED','FAILED')),
+  block_time INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  verified_at TEXT
+);
 '''
 
 
@@ -96,7 +109,30 @@ def get_connection():
 
 def init_db():
     connection = get_connection()
+    connection.execute('PRAGMA foreign_keys = OFF')
+    existing = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").fetchone()
+    if existing and existing['sql'] and 'PAYMENT_PROCESSING' not in existing['sql'] and 'status TEXT NOT NULL,' not in existing['sql']:
+        connection.execute('ALTER TABLE deliveries RENAME TO deliveries_legacy')
+        connection.execute('ALTER TABLE orders RENAME TO orders_legacy')
+        connection.execute('''CREATE TABLE orders (
+          id TEXT PRIMARY KEY, harvest_id TEXT NOT NULL REFERENCES harvests(id), farmer_id TEXT NOT NULL REFERENCES farmers(id), buyer_name TEXT NOT NULL, buyer_type TEXT NOT NULL, quantity REAL NOT NULL CHECK(quantity > 0), unit TEXT NOT NULL, total_amount REAL NOT NULL CHECK(total_amount >= 0), status TEXT NOT NULL, payment_status TEXT NOT NULL CHECK(payment_status IN ('PENDING','PAID')), transaction_signature TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)''')
+        connection.execute('INSERT INTO orders SELECT * FROM orders_legacy')
+        connection.execute('''CREATE TABLE deliveries (id TEXT PRIMARY KEY, order_id TEXT NOT NULL UNIQUE REFERENCES orders(id), status TEXT NOT NULL CHECK(status IN ('PENDING','DELIVERED')), confirmed_at TEXT)''')
+        connection.execute('INSERT INTO deliveries SELECT * FROM deliveries_legacy')
+        connection.execute('DROP TABLE deliveries_legacy')
+        connection.execute('DROP TABLE orders_legacy')
+    payment_existing = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'").fetchone()
+    if payment_existing and payment_existing['sql'] and 'orders_legacy' in payment_existing['sql']:
+        connection.execute('ALTER TABLE payments RENAME TO payments_legacy')
     connection.executescript(SCHEMA)
+    if connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='payments_legacy'").fetchone():
+        connection.execute('INSERT OR IGNORE INTO payments SELECT * FROM payments_legacy')
+        connection.execute('DROP TABLE payments_legacy')
+    credential_columns = {row['name'] for row in connection.execute('PRAGMA table_info(economic_credentials)').fetchall()}
+    for name, definition in [('credential_type', "TEXT NOT NULL DEFAULT 'ECONOMIC_CREDENTIAL'"), ('evidence_count', 'INTEGER NOT NULL DEFAULT 0'), ('verified_transaction_count', 'INTEGER NOT NULL DEFAULT 0'), ('updated_at', 'TEXT')]:
+        if name not in credential_columns:
+            connection.execute(f'ALTER TABLE economic_credentials ADD COLUMN {name} {definition}')
+    connection.execute('PRAGMA foreign_keys = ON')
     connection.commit()
     connection.close()
 

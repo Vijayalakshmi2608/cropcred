@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { Connection, PublicKey, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { updateFarmerWallet } from '../services/api';
 
-type WalletProvider = { isPhantom?: boolean; isConnected?: boolean; publicKey?: { toString(): string }; network?: string; connect: () => Promise<{ publicKey?: { toString(): string }}>; disconnect: () => Promise<void>; on?: (event: string, callback: (...args: any[]) => void) => void; off?: (event: string, callback: (...args: any[]) => void) => void };
+type WalletProvider = { isPhantom?: boolean; isConnected?: boolean; publicKey?: { toString(): string }; network?: string; connect: () => Promise<{ publicKey?: { toString(): string }}>; disconnect: () => Promise<void>; signAndSendTransaction?: (transaction: any) => Promise<{ signature: string }>; on?: (event: string, callback: (...args: any[]) => void) => void; off?: (event: string, callback: (...args: any[]) => void) => void };
 
 declare global { interface Window { solana?: WalletProvider; } }
 
