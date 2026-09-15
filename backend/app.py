@@ -221,16 +221,78 @@ def get_listing(listing_id):
 
 @app.get('/api/demands')
 def get_demands():
-    items = rows('SELECT * FROM demands ORDER BY created_at DESC')
+    items = rows('SELECT d.*, COUNT(r.id) AS response_count FROM demands d LEFT JOIN demand_responses r ON r.demand_id=d.id GROUP BY d.id ORDER BY d.created_at DESC')
     for item in items:
         item['quantity_label'] = f"{item['quantity']:g} {item['unit']}"
         item['price_label'] = f"₹{item['price_min']:g}–₹{item['price_max']:g}/{item['unit']}"
+        item['buyer_verified'] = bool(row('SELECT 1 AS ok FROM buyer_profiles WHERE business_name=? AND verification_status=\'VERIFIED\'', (item['buyer_name'],)))
     return ok(items)
+
+@app.post('/api/demands')
+def create_demand():
+    data = request.get_json(silent=True) or {}
+    required = ['buyer_name', 'buyer_type', 'crop', 'quantity', 'unit', 'required_date', 'frequency', 'min_price', 'max_price', 'location']
+    if any(data.get(key) in (None, '') for key in required): return fail('Product, quantity, date, frequency, price range, and location are required.')
+    try: quantity, min_price, max_price = float(data['quantity']), float(data['min_price']), float(data['max_price'])
+    except (TypeError, ValueError): return fail('Quantity and price values must be numbers.')
+    if quantity <= 0 or min_price < 0 or max_price < min_price: return fail('Use a positive quantity and a valid non-negative price range.')
+    try: datetime.fromisoformat(str(data['required_date']))
+    except ValueError: return fail('Required date must be a valid ISO date.')
+    connection = get_connection(); demand_id = f"DEM-{connection.execute('SELECT COUNT(*) FROM demands').fetchone()[0] + 1001}"
+    connection.execute('''INSERT INTO demands (id,buyer_name,buyer_type,crop,quantity,unit,price_min,price_max,location,frequency,deadline,requirements,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (demand_id, data['buyer_name'], data['buyer_type'], str(data['crop']).strip(), quantity, data['unit'], min_price, max_price, data['location'], data['frequency'], str(data['required_date']), data.get('requirements','').strip(), 'OPEN', datetime.now().isoformat(timespec='seconds')))
+    connection.execute('INSERT OR IGNORE INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', (f'buyer-{demand_id}', data['buyer_name'], data['buyer_type'], 'VERIFIED'))
+    connection.commit(); item = dict(connection.execute('SELECT * FROM demands WHERE id=?', (demand_id,)).fetchone()); connection.close(); return ok(item, 201)
 
 @app.get('/api/demands/<demand_id>')
 def get_demand(demand_id):
-    item = row('SELECT * FROM demands WHERE id=?', (demand_id,))
+    item = row('SELECT d.*, COUNT(r.id) AS response_count FROM demands d LEFT JOIN demand_responses r ON r.demand_id=d.id WHERE d.id=? GROUP BY d.id', (demand_id,))
     return ok(item) if item else fail('Demand not found', 404)
+
+@app.post('/api/demands/<demand_id>/respond')
+def respond_to_demand(demand_id):
+    data = request.get_json(silent=True) or {}
+    try: quantity = float(data.get('quantity_offered')); expected_price = float(data.get('expected_price'))
+    except (TypeError, ValueError): return fail('Offered quantity and expected price are required.')
+    connection = get_connection(); demand = connection.execute('SELECT * FROM demands WHERE id=?', (demand_id,)).fetchone()
+    if not demand: connection.close(); return fail('Demand not found', 404)
+    if demand['status'] != 'OPEN': connection.close(); return fail('Only OPEN demands accept responses.', 409)
+    farmer_id = data.get('farmer_id', 'farmer-01')
+    if not connection.execute('SELECT id FROM farmers WHERE id=?', (farmer_id,)).fetchone(): connection.close(); return fail('Farmer not found', 404)
+    if quantity <= 0 or quantity > demand['quantity'] or expected_price < demand['price_min'] or expected_price > demand['price_max']: connection.close(); return fail('Response quantity or price is outside the demand requirements.')
+    response_id = f"RESP-{connection.execute('SELECT COUNT(*) FROM demand_responses').fetchone()[0] + 1001}"
+    connection.execute('''INSERT INTO demand_responses (id,demand_id,farmer_id,quantity_offered,expected_price,available_date,status) VALUES (?,?,?,?,?,?,?)''', (response_id, demand_id, farmer_id, quantity, expected_price, data.get('available_date', demand['deadline']), 'SUBMITTED'))
+    connection.execute("UPDATE demands SET status='RESPONSES_RECEIVED', updated_at=? WHERE id=? AND status='OPEN'", (datetime.now().isoformat(timespec='seconds'), demand_id)); connection.commit(); response = connection.execute('''SELECT r.*, f.name, f.location FROM demand_responses r JOIN farmers f ON f.id=r.farmer_id WHERE r.id=?''', (response_id,)).fetchone(); connection.close(); return ok(dict(response), 201)
+
+@app.get('/api/demands/<demand_id>/responses')
+def get_demand_responses(demand_id):
+    connection = get_connection(); demand = connection.execute('SELECT * FROM demands WHERE id=?', (demand_id,)).fetchone()
+    if not demand: connection.close(); return fail('Demand not found', 404)
+    responses = [dict(item) for item in connection.execute('''SELECT r.*, f.name, f.location, f.wallet_address, (SELECT COUNT(*) FROM harvests h WHERE h.farmer_id=f.id AND h.status='VERIFIED') AS verified_harvests, (SELECT COUNT(*) FROM orders o WHERE o.farmer_id=f.id AND o.payment_status='PAID') AS completed_sales, (SELECT COUNT(*) FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=f.id AND p.status='VERIFIED') AS verified_payments FROM demand_responses r JOIN farmers f ON f.id=r.farmer_id WHERE r.demand_id=? ORDER BY r.created_at DESC''', (demand_id,)).fetchall()]; connection.close()
+    for item in responses:
+        item['match_reasons'] = ['Quantity available', 'Date compatible', 'Price within buyer range', 'Relevant verified harvest']
+        item['match_fit'] = min(100, 60 + (20 if item['quantity_offered'] >= demand['quantity'] * .5 else 10) + (10 if demand['price_min'] <= item['expected_price'] <= demand['price_max'] else 0) + (10 if item['verified_harvests'] else 0))
+    return ok(responses)
+
+@app.post('/api/demands/<demand_id>/accept/<response_id>')
+def accept_demand_response(demand_id, response_id):
+    connection = get_connection(); demand = connection.execute('SELECT * FROM demands WHERE id=?', (demand_id,)).fetchone(); response = connection.execute('SELECT * FROM demand_responses WHERE id=? AND demand_id=?', (response_id, demand_id)).fetchone()
+    if not demand or not response: connection.close(); return fail('Demand or response not found', 404)
+    if demand['status'] not in ('OPEN','RESPONSES_RECEIVED'): connection.close(); return fail('This demand is no longer accepting a match.', 409)
+    if response['status'] not in ('SUBMITTED','SHORTLISTED'): connection.close(); return fail('This response cannot be accepted.', 409)
+    harvest = connection.execute("SELECT * FROM harvests WHERE farmer_id=? AND crop LIKE ? AND status='VERIFIED' AND quantity>=? ORDER BY harvest_date DESC LIMIT 1", (response['farmer_id'], demand['crop'], response['quantity_offered'])).fetchone()
+    if not harvest: connection.close(); return fail('Farmer has no matching verified harvest with sufficient quantity.', 409)
+    order_id = f"CR-ORD-{connection.execute('SELECT COUNT(*) FROM orders').fetchone()[0] + 232:05d}"; total = response['quantity_offered'] * response['expected_price']
+    connection.execute("UPDATE demand_responses SET status='ACCEPTED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), response_id)); connection.execute("UPDATE demand_responses SET status='REJECTED', updated_at=? WHERE demand_id=? AND id<>? AND status IN ('SUBMITTED','SHORTLISTED')", (datetime.now().isoformat(timespec='seconds'), demand_id, response_id)); connection.execute("UPDATE demands SET status='ORDER_CREATED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), demand_id)); connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature) VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, harvest['id'], response['farmer_id'], demand['buyer_name'], demand['buyer_type'], response['quantity_offered'], demand['unit'], total)); connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING')); connection.commit(); order = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()); connection.close(); return ok(order, 201)
+
+@app.get('/api/buyers/<buyer_id>/profile')
+def get_buyer_profile(buyer_id):
+    connection = get_connection(); buyer = connection.execute('SELECT * FROM buyer_profiles WHERE id=? OR business_name=?', (buyer_id, buyer_id)).fetchone()
+    if not buyer: connection.close(); return fail('Buyer profile not found', 404)
+    completed = connection.execute("SELECT COUNT(*) AS count FROM orders WHERE buyer_name=? AND payment_status='PAID'", (buyer['business_name'],)).fetchone()['count']; payments = connection.execute("SELECT COUNT(*) AS count FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.buyer_name=? AND p.status='VERIFIED'", (buyer['business_name'],)).fetchone()['count']; deliveries = connection.execute("SELECT COUNT(*) AS count FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.buyer_name=? AND d.status='DELIVERED'", (buyer['business_name'],)).fetchone()['count']; connection.close(); return ok({**dict(buyer), 'completed_orders': completed, 'verified_payments': payments, 'delivery_completions': deliveries})
+
+@app.get('/api/farmers/<farmer_id>/opportunities')
+def farmer_opportunities(farmer_id):
+    return ok(rows("SELECT * FROM demands WHERE status IN ('OPEN','RESPONSES_RECEIVED') AND id NOT IN (SELECT demand_id FROM demand_responses WHERE farmer_id=? AND status IN ('SUBMITTED','ACCEPTED')) ORDER BY created_at DESC", (farmer_id,)))
 
 @app.get('/api/orders')
 def get_orders():

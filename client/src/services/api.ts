@@ -20,6 +20,13 @@ export async function getHarvests(): Promise<Harvest[]> { try { return (await re
 export async function createHarvest(data: any): Promise<Harvest> { return mapHarvest(await request<any>('/harvests', { method: 'POST', body: JSON.stringify(data) })); }
 export async function getMarketplaceListings(): Promise<Listing[]> { try { return (await request<any[]>('/marketplace')).map(mapListing); } catch { return demoListings; } }
 export async function getDemands(): Promise<Demand[]> { try { return (await request<any[]>('/demands')).map(mapDemand); } catch { return demoDemands; } }
+export async function getDemandNetwork() { return request<any[]>('/demands'); }
+export async function createDemand(data: any) { return request<any>('/demands', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getDemandResponses(demandId: string) { return request<any[]>(`/demands/${demandId}/responses`); }
+export async function respondToDemand(demandId: string, data: any) { return request<any>(`/demands/${demandId}/respond`, { method: 'POST', body: JSON.stringify(data) }); }
+export async function acceptDemandResponse(demandId: string, responseId: string) { return request<any>(`/demands/${demandId}/accept/${responseId}`, { method: 'POST' }); }
+export async function getBuyerProfile(buyerId = 'buyer-1001') { return request<any>(`/buyers/${buyerId}/profile`); }
+export async function getFarmerOpportunities(farmerId = 'farmer-01') { return request<any[]>(`/farmers/${farmerId}/opportunities`); }
 export async function getOrders(): Promise<Order[]> { try { return (await request<any[]>('/orders')).map(mapOrder); } catch { return demoOrders; } }
 export async function createOrder(listingId: string, quantity: number, buyerName = 'CropCred marketplace preorder'): Promise<Order> { return mapOrder(await request<any>('/orders', { method: 'POST', body: JSON.stringify({ listing_id: listingId, quantity, buyer_name: buyerName, buyer_type: 'RETAILER' }) })); }
 export async function updateOrderStatus(id: string, status: string): Promise<Order> { return mapOrder(await request<any>(`/orders/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) })); }

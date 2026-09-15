@@ -56,6 +56,25 @@ CREATE TABLE IF NOT EXISTS demands (
   deadline TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS buyer_profiles (
+  id TEXT PRIMARY KEY,
+  business_name TEXT NOT NULL,
+  buyer_type TEXT NOT NULL,
+  wallet_address TEXT,
+  verification_status TEXT NOT NULL DEFAULT 'VERIFIED',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS demand_responses (
+  id TEXT PRIMARY KEY,
+  demand_id TEXT NOT NULL REFERENCES demands(id),
+  farmer_id TEXT NOT NULL REFERENCES farmers(id),
+  quantity_offered REAL NOT NULL CHECK(quantity_offered > 0),
+  expected_price REAL NOT NULL CHECK(expected_price >= 0),
+  available_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('SUBMITTED','SHORTLISTED','ACCEPTED','REJECTED','WITHDRAWN')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   harvest_id TEXT NOT NULL REFERENCES harvests(id),
@@ -142,6 +161,17 @@ def init_db():
     for name, definition in [('credential_type', "TEXT NOT NULL DEFAULT 'ECONOMIC_CREDENTIAL'"), ('evidence_count', 'INTEGER NOT NULL DEFAULT 0'), ('verified_transaction_count', 'INTEGER NOT NULL DEFAULT 0'), ('version', 'INTEGER NOT NULL DEFAULT 1'), ('status', "TEXT NOT NULL DEFAULT 'VERIFIED'"), ('fingerprint', 'TEXT'), ('updated_at', 'TEXT')]:
         if name not in credential_columns:
             connection.execute(f'ALTER TABLE economic_credentials ADD COLUMN {name} {definition}')
+    demand_columns = {row['name'] for row in connection.execute('PRAGMA table_info(demands)').fetchall()}
+    for name, definition in [('requirements', 'TEXT'), ('status', "TEXT NOT NULL DEFAULT 'OPEN'"), ('updated_at', 'TEXT')]:
+        if name not in demand_columns:
+            connection.execute(f'ALTER TABLE demands ADD COLUMN {name} {definition}')
+    connection.executemany('INSERT OR IGNORE INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', [
+        ('buyer-1001', 'Chennai Restaurant Collective', 'RESTAURANT', 'VERIFIED'),
+        ('buyer-1002', 'Southstar Grocers', 'RETAILER', 'VERIFIED'),
+        ('buyer-1003', 'Harvest Kitchen Co.', 'PROCESSOR', 'VERIFIED'),
+        ('buyer-1004', 'The Green Table', 'RESTAURANT', 'VERIFIED'),
+        ('buyer-1005', 'Daily Basket', 'RETAILER', 'VERIFIED'),
+    ])
     connection.execute('PRAGMA foreign_keys = ON')
     connection.commit()
     connection.close()
@@ -192,6 +222,13 @@ def seed_db():
     connection.executemany('''INSERT INTO demands
       (id,buyer_name,buyer_type,crop,quantity,unit,price_min,price_max,location,frequency,deadline)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)''', demands)
+    connection.executemany('INSERT INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', [
+        ('buyer-1001', 'Chennai Restaurant Collective', 'RESTAURANT', 'VERIFIED'),
+        ('buyer-1002', 'Southstar Grocers', 'RETAILER', 'VERIFIED'),
+        ('buyer-1003', 'Harvest Kitchen Co.', 'PROCESSOR', 'VERIFIED'),
+        ('buyer-1004', 'The Green Table', 'RESTAURANT', 'VERIFIED'),
+        ('buyer-1005', 'Daily Basket', 'RETAILER', 'VERIFIED'),
+    ])
     orders = [
         ('CR-ORD-00231','CR-HRV-00041','farmer-01','Chennai Restaurant','RESTAURANT',10,'kg',350,'COMPLETED','PAID'),
         ('CR-ORD-00229','CR-HRV-00039','farmer-01','The Green Table','RESTAURANT',40,'units',1120,'DELIVERED','PAID'),
