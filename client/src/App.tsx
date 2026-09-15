@@ -1,42 +1,13 @@
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
-import ErrorBoundary from "./components/ErrorBoundary";
-import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
+import { Redirect, Route, Switch } from 'wouter';
+import { useState } from 'react';
+import { Dashboard, B2B, HarvestDetail, Harvests, Marketplace, MarketplaceDetail, NewHarvest, NotFound, Orders, PassportPage, Profile } from './pages/Workspace';
+import { listings, type Harvest, type Listing, type Order, orders as seedOrders, harvests as seedHarvests } from './data/mockData';
 
-
-function Router() {
-  return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
-  );
+export default function App() {
+  const [harvests, setHarvests] = useState<Harvest[]>(seedHarvests);
+  const [orders, setOrders] = useState<Order[]>(seedOrders);
+  const addHarvest = (harvest: Harvest) => setHarvests((current) => [harvest, ...current]);
+  const addOrder = (listing: Listing) => setOrders((current) => [{ id: `CR-ORD-${String(232 + current.length).padStart(5, '0')}`, crop: listing.crop, quantity: `10 ${listing.unit}`, amount: listing.price.replace(/\/.*$/, ''), buyer: 'CropCred marketplace preorder', status: 'ORDER PLACED', date: '22 Sep 2026', wallet: 'Awaiting Solana transaction' }, ...current]);
+  const props = { harvests, setHarvests, orders, setOrders };
+  return <Switch><Route path="/"><Redirect to="/dashboard" /></Route><Route path="/dashboard"><Dashboard {...props} /></Route><Route path="/harvests/new"><NewHarvest onRegistered={addHarvest} /></Route><Route path="/harvests/:id"><HarvestDetail {...props} /></Route><Route path="/harvests"><Harvests {...props} /></Route><Route path="/marketplace/:id"><MarketplaceDetail onPreorder={addOrder} /></Route><Route path="/marketplace"><Marketplace onPreorder={addOrder} /></Route><Route path="/b2b"><B2B /></Route><Route path="/orders"><Orders {...props} /></Route><Route path="/passport"><PassportPage /></Route><Route path="/profile"><Profile /></Route><Route><NotFound /></Route></Switch>;
 }
-
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
-function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
-}
-
-export default App;
