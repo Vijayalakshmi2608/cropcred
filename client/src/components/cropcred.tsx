@@ -3,6 +3,7 @@ import { Link, useLocation } from 'wouter';
 import {
   ArrowDownRight,
   ArrowUpRight,
+  BarChart3,
   Bell,
   Check,
   ChevronDown,
@@ -37,6 +38,7 @@ export const navItems = [
   { href: '/b2b', label: 'B2B Demand', icon: ClipboardCheck },
   { href: '/orders', label: 'Orders', icon: Truck },
   { href: '/passport', label: 'Economic Passport', icon: ShieldCheck },
+  { href: '/insights', label: 'CropCred Insights', icon: BarChart3 },
   { href: '/profile', label: 'Profile', icon: WalletCards },
 ];
 
@@ -51,8 +53,8 @@ export function SectionHeading({ eyebrow, title, description, action }: { eyebro
   return <div className="section-heading"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2>{description && <p>{description}</p>}</div>{action}</div>;
 }
 
-export function MetricCard({ label, value, trend, trendLabel, icon: Icon, tone = 'copper' }: { label: string; value: string; trend?: string; trendLabel?: string; icon: typeof Leaf; tone?: string }) {
-  return <div className={`metric-card tone-${tone}`}><div className="metric-top"><span className="metric-label">{label}</span><span className="metric-icon"><Icon size={17} strokeWidth={1.7} /></span></div><div className="metric-value">{value}</div>{trend && <div className="metric-trend"><ArrowUpRight size={13} /> <strong>{trend}</strong><span>{trendLabel}</span></div>}</div>;
+export function MetricCard({ label, value, trend, trendLabel, icon: Icon, tone = 'copper', category, source }: { label: string; value: string; trend?: string; trendLabel?: string; icon: typeof Leaf; tone?: string; category?: string; source?: string }) {
+  return <div className={`metric-card tone-${tone}`}><div className="metric-top"><span className="metric-label">{label}</span><span className="metric-icon"><Icon size={17} strokeWidth={1.7} /></span></div><div className="metric-value">{value}</div>{category && <div className="metric-provenance"><b>{category}</b>{source && <span>{source}</span>}</div>}{trend && <div className="metric-trend"><ArrowUpRight size={13} /> <strong>{trend}</strong><span>{trendLabel}</span></div>}</div>;
 }
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {

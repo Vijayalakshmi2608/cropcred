@@ -445,5 +445,87 @@ def get_passport(farmer_id):
     if not snapshot: return fail('Farmer not found', 404)
     return ok({**snapshot, 'credential': dict(credential) if credential else None, 'activity': evidence})
 
+def _count(connection, query, params=()):
+    return connection.execute(query, params).fetchone()[0]
+
+def insights_snapshot():
+    connection = get_connection()
+    verified_harvests = _count(connection, "SELECT COUNT(*) FROM harvests WHERE status='VERIFIED'")
+    orders = _count(connection, 'SELECT COUNT(*) FROM orders')
+    paid_orders = _count(connection, "SELECT COUNT(*) FROM orders WHERE payment_status='PAID'")
+    completed_orders = _count(connection, "SELECT COUNT(*) FROM orders WHERE status IN ('COMPLETED','DELIVERED')")
+    verified_payments = _count(connection, "SELECT COUNT(*) FROM payments WHERE status='VERIFIED'")
+    deliveries = _count(connection, "SELECT COUNT(*) FROM deliveries WHERE status='DELIVERED'")
+    credentials = _count(connection, 'SELECT COUNT(*) FROM economic_credentials')
+    evidence = _count(connection, 'SELECT COUNT(*) FROM credential_evidence WHERE verified=1')
+    verification_events = _count(connection, 'SELECT COUNT(*) FROM credential_verification_events')
+    successful_verifications = _count(connection, 'SELECT COUNT(*) FROM credential_verification_events WHERE success=1')
+    active_buyers = _count(connection, 'SELECT COUNT(DISTINCT buyer_name) FROM orders')
+    active_farmers = _count(connection, 'SELECT COUNT(DISTINCT farmer_id) FROM harvests')
+    demands = _count(connection, 'SELECT COUNT(*) FROM demands')
+    open_demands = _count(connection, "SELECT COUNT(*) FROM demands WHERE status IN ('OPEN','RESPONSES_RECEIVED')")
+    responses = _count(connection, 'SELECT COUNT(*) FROM demand_responses')
+    b2b_orders = _count(connection, "SELECT COUNT(*) FROM orders o WHERE o.buyer_name IN (SELECT buyer_name FROM demands) AND o.status IN ('COMPLETED','DELIVERED')")
+    listed_quantity = connection.execute('SELECT COALESCE(SUM(quantity_available),0) FROM marketplace_listings').fetchone()[0]
+    total_listed = listed_quantity
+    demand_quantity = connection.execute('SELECT COALESCE(SUM(quantity),0) FROM demands').fetchone()[0]
+    repeat_buyers = _count(connection, 'SELECT COUNT(*) FROM (SELECT buyer_name FROM orders GROUP BY buyer_name HAVING COUNT(*) > 1)')
+    avg_order = connection.execute('SELECT AVG(quantity) FROM orders').fetchone()[0]
+    crop_volume = [dict(item) for item in connection.execute("SELECT h.crop, SUM(o.quantity) AS quantity, COUNT(o.id) AS orders FROM orders o JOIN harvests h ON h.id=o.harvest_id GROUP BY h.crop ORDER BY quantity DESC").fetchall()]
+    status_mix = [dict(item) for item in connection.execute('SELECT status, COUNT(*) AS count FROM orders GROUP BY status ORDER BY count DESC').fetchall()]
+    evidence_types = [dict(item) for item in connection.execute('SELECT evidence_type, COUNT(*) AS count FROM credential_evidence GROUP BY evidence_type ORDER BY count DESC').fetchall()]
+    validation = _count(connection, 'SELECT COUNT(*) FROM validation_interviews')
+    pilots = _count(connection, 'SELECT COUNT(*) FROM pilot_participants')
+    external_traction = _count(connection, "SELECT COUNT(*) FROM pilot_participants WHERE stage='PILOT ACTIVE'")
+    connection.close()
+    return {'product_activity': {'verified_harvests': verified_harvests, 'completed_sales': completed_orders, 'verified_payments': verified_payments, 'deliveries': deliveries, 'credentials': credentials, 'evidence_records': evidence, 'verification_events': verification_events, 'active_buyers': active_buyers, 'active_farmers': active_farmers, 'b2b_demands': demands, 'b2b_responses': responses, 'completed_b2b_transactions': b2b_orders}, 'validation': {'conversations': validation}, 'pilots': {'participants': pilots}, 'external_traction': {'recorded': external_traction, 'label': 'External traction recorded' if external_traction else 'No external traction recorded yet'}, 'funnel': [{'label':'Farmers', 'value': active_farmers}, {'label':'Harvests registered', 'value': _count(get_connection(), 'SELECT COUNT(*) FROM harvests')}, {'label':'Orders', 'value': orders}, {'label':'Verified payments', 'value': verified_payments}, {'label':'Deliveries confirmed', 'value': deliveries}, {'label':'Economic credentials', 'value': credentials}, {'label':'Credential verification events', 'value': verification_events}], 'commerce': {'total_listed_quantity': total_listed, 'active_listing_quantity': listed_quantity, 'completed_orders': completed_orders, 'repeat_buyer_activity': repeat_buyers, 'average_order_quantity': avg_order, 'demand_volume': demand_quantity, 'top_crops': crop_volume, 'order_status': status_mix}, 'b2b': {'open_demands': open_demands, 'total_demands': demands, 'responses': responses, 'demand_quantity': demand_quantity, 'completed_transactions': b2b_orders, 'response_rate': round(responses / demands * 100) if demands else None, 'demand_to_order_conversion': round(b2b_orders / demands * 100) if demands else None}, 'credentials': {'issued': credentials, 'verified': _count(get_connection(), "SELECT COUNT(*) FROM economic_credentials WHERE status='VERIFIED'"), 'verification_attempts': verification_events, 'successful_verifications': successful_verifications, 'success_rate': round(successful_verifications / verification_events * 100) if verification_events else None, 'blockchain_anchored': _count(get_connection(), "SELECT COUNT(*) FROM economic_credentials WHERE onchain_reference IS NOT NULL AND onchain_reference != ''"), 'evidence_types': evidence_types}}
+
+@app.get('/api/insights/overview')
+def insights_overview(): return ok(insights_snapshot())
+@app.get('/api/insights/product-funnel')
+def insights_funnel(): return ok(insights_snapshot()['funnel'])
+@app.get('/api/insights/commerce')
+def insights_commerce(): return ok(insights_snapshot()['commerce'])
+@app.get('/api/insights/b2b')
+def insights_b2b(): return ok(insights_snapshot()['b2b'])
+@app.get('/api/insights/credentials')
+def insights_credentials(): return ok(insights_snapshot()['credentials'])
+
+def _records(table): return rows(f'SELECT * FROM {table} ORDER BY created_at DESC')
+def _create_record(table, fields, required):
+    data = request.get_json(silent=True) or {}
+    if any(data.get(key) in (None, '') for key in required): return fail(f"Required fields missing: {', '.join(required)}")
+    connection = get_connection(); record_id = f"{table[:4].upper()}-{_count(connection, f'SELECT COUNT(*) FROM {table}') + 1:04d}"
+    values = [data.get(field) for field in fields]; columns = ','.join(['id', *fields]); placeholders = ','.join(['?'] * (len(fields) + 1))
+    try:
+        connection.execute(f'INSERT INTO {table} ({columns}) VALUES ({placeholders})', [record_id, *values]); connection.commit(); item = dict(connection.execute(f'SELECT * FROM {table} WHERE id=?', (record_id,)).fetchone()); return ok(item, 201)
+    except Exception as exc: return fail('Could not save record. Check the submitted fields.', 400)
+    finally: connection.close()
+
+@app.get('/api/validation/interviews')
+def get_validation_interviews(): return ok(_records('validation_interviews'))
+@app.post('/api/validation/interviews')
+def create_validation_interview(): return _create_record('validation_interviews', ['participant_type','participant_name_or_alias','region','date','current_workflow','pain_point','problem_confirmed','requested_capability','pilot_interest','notes'], ['participant_type','date','pain_point','problem_confirmed','pilot_interest'])
+@app.get('/api/product-learnings')
+def get_product_learnings(): return ok(_records('product_learnings'))
+@app.post('/api/product-learnings')
+def create_product_learning(): return _create_record('product_learnings', ['insight','source','product_change','result','status','date'], ['insight','source','status','date'])
+@app.get('/api/pilots')
+def get_pilots(): return ok(_records('pilot_participants'))
+@app.post('/api/pilots')
+def create_pilot(): return _create_record('pilot_participants', ['organization_or_alias','participant_type','region','stage','interest_area','next_action','notes'], ['organization_or_alias','participant_type','stage'])
+@app.get('/api/gtm-experiments')
+def get_gtm_experiments(): return ok(_records('gtm_experiments'))
+@app.post('/api/gtm-experiments')
+def create_gtm_experiment(): return _create_record('gtm_experiments', ['experiment_name','target_segment','hypothesis','channel','metric','result','status','date'], ['experiment_name','status','date'])
+@app.get('/api/founder-notes')
+def get_founder_notes(): return ok(_records('founder_notes'))
+@app.post('/api/founder-notes')
+def create_founder_note(): return _create_record('founder_notes', ['decision','reasoning','evidence','date'], ['decision','date'])
+@app.get('/api/credential-verification-events')
+def get_verification_events(): return ok(_records('credential_verification_events'))
+@app.post('/api/credential-verification-events')
+def create_verification_event(): return _create_record('credential_verification_events', ['credential_id','verifier_type','event_type','timestamp','success'], ['credential_id','verifier_type','event_type','timestamp'])
+
 if __name__ == '__main__':
     init_db(); seed_db(); app.run(host='0.0.0.0', port=5000, debug=True)

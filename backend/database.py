@@ -126,6 +126,35 @@ CREATE TABLE IF NOT EXISTS credential_evidence (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(credential_id, evidence_type, reference_type, reference_id)
 );
+CREATE TABLE IF NOT EXISTS validation_interviews (
+  id TEXT PRIMARY KEY, participant_type TEXT NOT NULL, participant_name_or_alias TEXT,
+  region TEXT, date TEXT NOT NULL, current_workflow TEXT, pain_point TEXT NOT NULL,
+  problem_confirmed TEXT NOT NULL, requested_capability TEXT, pilot_interest TEXT NOT NULL,
+  notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS product_learnings (
+  id TEXT PRIMARY KEY, insight TEXT NOT NULL, source TEXT NOT NULL, product_change TEXT,
+  result TEXT, status TEXT NOT NULL, date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS pilot_participants (
+  id TEXT PRIMARY KEY, organization_or_alias TEXT NOT NULL, participant_type TEXT NOT NULL,
+  region TEXT, stage TEXT NOT NULL, interest_area TEXT, next_action TEXT, notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS founder_notes (
+  id TEXT PRIMARY KEY, decision TEXT NOT NULL, reasoning TEXT, evidence TEXT,
+  date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS gtm_experiments (
+  id TEXT PRIMARY KEY, experiment_name TEXT NOT NULL, target_segment TEXT, hypothesis TEXT,
+  channel TEXT, metric TEXT, result TEXT, status TEXT NOT NULL, date TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS credential_verification_events (
+  id TEXT PRIMARY KEY, credential_id TEXT NOT NULL REFERENCES economic_credentials(credential_id),
+  verifier_type TEXT NOT NULL, event_type TEXT NOT NULL, timestamp TEXT NOT NULL,
+  success INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 '''
 
 

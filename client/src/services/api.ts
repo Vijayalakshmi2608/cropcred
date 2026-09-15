@@ -27,6 +27,23 @@ export async function respondToDemand(demandId: string, data: any) { return requ
 export async function acceptDemandResponse(demandId: string, responseId: string) { return request<any>(`/demands/${demandId}/accept/${responseId}`, { method: 'POST' }); }
 export async function getBuyerProfile(buyerId = 'buyer-1001') { return request<any>(`/buyers/${buyerId}/profile`); }
 export async function getFarmerOpportunities(farmerId = 'farmer-01') { return request<any[]>(`/farmers/${farmerId}/opportunities`); }
+export async function getInsightsOverview() { return request<any>('/insights/overview'); }
+export async function getProductFunnel() { return request<any[]>('/insights/product-funnel'); }
+export async function getCommerceInsights() { return request<any>('/insights/commerce'); }
+export async function getB2BInsights() { return request<any>('/insights/b2b'); }
+export async function getCredentialInsights() { return request<any>('/insights/credentials'); }
+export async function getValidationInterviews() { return request<any[]>('/validation/interviews'); }
+export async function createValidationInterview(data: any) { return request<any>('/validation/interviews', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getProductLearnings() { return request<any[]>('/product-learnings'); }
+export async function createProductLearning(data: any) { return request<any>('/product-learnings', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getPilots() { return request<any[]>('/pilots'); }
+export async function createPilot(data: any) { return request<any>('/pilots', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getGtmExperiments() { return request<any[]>('/gtm-experiments'); }
+export async function createGtmExperiment(data: any) { return request<any>('/gtm-experiments', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getFounderNotes() { return request<any[]>('/founder-notes'); }
+export async function createFounderNote(data: any) { return request<any>('/founder-notes', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getVerificationEvents() { return request<any[]>('/credential-verification-events'); }
+export async function createVerificationEvent(data: any) { return request<any>('/credential-verification-events', { method: 'POST', body: JSON.stringify(data) }); }
 export async function getOrders(): Promise<Order[]> { try { return (await request<any[]>('/orders')).map(mapOrder); } catch { return demoOrders; } }
 export async function createOrder(listingId: string, quantity: number, buyerName = 'CropCred marketplace preorder'): Promise<Order> { return mapOrder(await request<any>('/orders', { method: 'POST', body: JSON.stringify({ listing_id: listingId, quantity, buyer_name: buyerName, buyer_type: 'RETAILER' }) })); }
 export async function updateOrderStatus(id: string, status: string): Promise<Order> { return mapOrder(await request<any>(`/orders/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) })); }
