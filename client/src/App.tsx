@@ -5,6 +5,7 @@ import PassportIntelligence from './pages/PassportIntelligence';
 import PublicCredential from './pages/PublicCredential';
 import DemandNetwork from './pages/DemandNetwork';
 import Insights from './pages/Insights';
+import Landing from './pages/Landing';
 import { listings, type Harvest, type Listing, type Order, orders as seedOrders, harvests as seedHarvests } from './data/mockData';
 import { createHarvest, createOrder, getHarvests, getOrders } from './services/api';
 
@@ -30,5 +31,5 @@ export default function App() {
     catch { setOrders((current) => [{ id: `CR-ORD-${String(232 + current.length).padStart(5, '0')}`, crop: listing.crop, quantity: `10 ${listing.unit}`, amount: listing.price.replace(/\/.*$/, ''), buyer: 'CropCred marketplace preorder', status: 'ORDER PLACED', date: '22 Sep 2026', wallet: 'Awaiting Solana transaction' }, ...current]); }
   };
   const props = { harvests, setHarvests, orders, setOrders };
-  return <Switch><Route path="/"><Redirect to="/dashboard" /></Route><Route path="/dashboard"><Dashboard {...props} /></Route><Route path="/harvests/new"><NewHarvest onRegistered={addHarvest} /></Route><Route path="/harvests/:id"><HarvestDetail {...props} /></Route><Route path="/harvests"><Harvests {...props} /></Route><Route path="/marketplace/:id"><MarketplaceDetail onPreorder={addOrder} /></Route><Route path="/marketplace"><Marketplace onPreorder={addOrder} /></Route><Route path="/b2b"><DemandNetwork /></Route><Route path="/orders"><Orders {...props} /></Route><Route path="/passport"><PassportIntelligence /></Route><Route path="/insights"><Insights /></Route><Route path="/profile"><Profile /></Route><Route path="/verify/:credentialId"><PublicCredential /></Route><Route><NotFound /></Route></Switch>;
+  return <Switch><Route path="/"><Landing /></Route><Route path="/dashboard"><Dashboard {...props} /></Route><Route path="/harvests/new"><NewHarvest onRegistered={addHarvest} /></Route><Route path="/harvests/:id"><HarvestDetail {...props} /></Route><Route path="/harvests"><Harvests {...props} /></Route><Route path="/marketplace/:id"><MarketplaceDetail onPreorder={addOrder} /></Route><Route path="/marketplace"><Marketplace onPreorder={addOrder} /></Route><Route path="/b2b"><DemandNetwork /></Route><Route path="/orders"><Orders {...props} /></Route><Route path="/passport"><PassportIntelligence /></Route><Route path="/insights"><Insights /></Route><Route path="/profile"><Profile /></Route><Route path="/verify/:credentialId"><PublicCredential /></Route><Route><NotFound /></Route></Switch>;
 }

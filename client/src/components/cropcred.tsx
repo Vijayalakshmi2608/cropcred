@@ -32,14 +32,15 @@ import { NetworkBadge, SolanaWalletButton, WalletAddress } from './solana';
 import { useSolanaWallet } from '../contexts/SolanaWalletContext';
 
 export const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: Sparkles },
-  { href: '/harvests', label: 'My Harvests', icon: Leaf },
-  { href: '/marketplace', label: 'Marketplace', icon: PackageCheck },
-  { href: '/b2b', label: 'B2B Demand', icon: ClipboardCheck },
-  { href: '/orders', label: 'Orders', icon: Truck },
-  { href: '/passport', label: 'Economic Passport', icon: ShieldCheck },
-  { href: '/insights', label: 'CropCred Insights', icon: BarChart3 },
-  { href: '/profile', label: 'Profile', icon: WalletCards },
+  { href: '/dashboard', label: 'Dashboard', icon: Sparkles, group: 'Operate' },
+  { href: '/harvests', label: 'Harvests', icon: Leaf, group: 'Operate' },
+  { href: '/marketplace', label: 'Marketplace', icon: PackageCheck, group: 'Operate' },
+  { href: '/b2b', label: 'B2B Demand', icon: ClipboardCheck, group: 'Operate' },
+  { href: '/orders', label: 'Orders', icon: Truck, group: 'Operate' },
+  { href: '/passport', label: 'Economic Passport', icon: ShieldCheck, group: 'Trust' },
+  { href: '/verify/CR-CRED-00001', label: 'Credentials', icon: FileCheck2, group: 'Trust' },
+  { href: '/insights', label: 'Insights', icon: BarChart3, group: 'Intelligence' },
+  { href: '/profile', label: 'Profile', icon: WalletCards, group: 'Account' },
 ];
 
 export function StatusBadge({ status, compact = false }: { status: string; compact?: boolean }) {
@@ -59,7 +60,8 @@ export function MetricCard({ label, value, trend, trendLabel, icon: Icon, tone =
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [location] = useLocation();
-  return <aside className={`sidebar ${open ? 'open' : ''}`}><div className="brand"><div className="brand-mark"><span /><span /><span /></div><div><div className="brand-name">cropcred</div><div className="brand-tag">economic passport</div></div><button className="mobile-close" onClick={onClose} aria-label="Close menu"><X size={18} /></button></div><div className="sidebar-rule" /><div className="nav-label">Workspace</div><nav className="primary-nav">{navItems.map(({ href, label, icon: Icon }) => <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href || (href !== '/dashboard' && location.startsWith(href)) ? 'active' : ''}`}><Icon size={17} strokeWidth={1.8} /><span>{label}</span>{href === '/passport' && <span className="nav-pulse" />}</Link>)}</nav><div className="sidebar-bottom"><div className="nav-label">Support</div><Link href="/profile" onClick={onClose} className="nav-item"><CircleHelp size={17} strokeWidth={1.8} /><span>Help centre</span></Link><button className="nav-item" onClick={() => window.alert('Settings will be connected in a future phase.')}><Settings size={17} strokeWidth={1.8} /><span>Settings</span></button><div className="sidebar-status"><div className="pulse-dot" /><div><strong>Phase 1 prototype</strong><span>Local data only</span></div></div></div></aside>;
+  const groups = Array.from(new Set(navItems.map((item) => item.group)));
+  return <aside className={`sidebar ${open ? 'open' : ''}`}><div className="brand"><div className="brand-mark"><span /><span /><span /></div><div><div className="brand-name">cropcred</div><div className="brand-tag">economic passport</div></div><button className="mobile-close" onClick={onClose} aria-label="Close menu"><X size={18} /></button></div><div className="sidebar-rule" /><nav className="primary-nav">{groups.map((group) => <div className="nav-group" key={group}><div className="nav-label">{group}</div>{navItems.filter((item) => item.group === group).map(({ href, label, icon: Icon }) => <Link key={href} href={href} onClick={onClose} className={`nav-item ${location === href || (href !== '/dashboard' && location.startsWith(href)) ? 'active' : ''}`}><Icon size={17} strokeWidth={1.8} /><span>{label}</span>{href === '/passport' && <span className="nav-pulse" />}</Link>)}</div>)}</nav><div className="sidebar-bottom"><div className="nav-label">Support</div><Link href="/profile" onClick={onClose} className="nav-item"><CircleHelp size={17} strokeWidth={1.8} /><span>Help centre</span></Link><button className="nav-item" onClick={() => window.alert('Settings will be connected in a future phase.')}><Settings size={17} strokeWidth={1.8} /><span>Settings</span></button><div className="sidebar-status"><div className="pulse-dot" /><div><strong>Demo workspace</strong><span>Devnet + local evidence</span></div></div></div></aside>;
 }
 
 export function Topbar({ title, subtitle, onMenu }: { title: string; subtitle?: string; onMenu: () => void }) {

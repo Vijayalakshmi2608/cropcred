@@ -1,0 +1,7 @@
+Phase 8 visual QA findings:
+- Landing page: polished first-time entry experience with clear Commerce → Evidence → Credential → Trust journey and responsive passport visual. The passport card now derives displayed counts, status, fingerprint state, and identity from the passport API when available; it falls back honestly to building/pending states when the API is unavailable.
+- Dashboard: grouped sidebar navigation, verified subtitle, evidence-oriented command center, and deterministic recommended next action are visible and coherent.
+- Economic Passport: primary wow moment retains strong dark hero, identity strip, evidence-derived metrics, reliability cards, and selective-sharing flow. Empty backend state is shown honestly when the local API is unavailable.
+- Public credential: public verification route intentionally returns a not-found/empty state when the backend cannot serve the credential; when available it uses the structured evidence-first verification view and excludes sensitive private information.
+- Build: frontend production build passed; backend compilation and idempotent initialization passed; bounded health/passport/credential/Insights API smoke test passed.
+- Safety: no fake signatures, trust scores, fabricated traction, loan approval claims, or INR-to-SOL equivalence found in the Phase 8 user-facing scan.
