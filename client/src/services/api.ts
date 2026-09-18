@@ -1,7 +1,9 @@
 import { demands as demoDemands, listings as demoListings, orders as demoOrders, harvests as demoHarvests, currentFarmer } from '../data/mockData';
 import type { Demand, Harvest, Listing, Order } from '../data/mockData';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/$/, '');
+export const CROP_CRED_API_BASE = API_BASE;
+export const CROP_CRED_API_CONFIGURED = Boolean(import.meta.env.VITE_API_URL);
 const FALLBACK_DELAY = 180;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
