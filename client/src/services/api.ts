@@ -2,9 +2,10 @@ import { currentFarmer } from '../data/mockData';
 import type { Demand, Harvest, Listing, Order } from '../data/mockData';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
-const API_BASE = (configuredApiBase || '/api').replace(/\/$/, '');
+const PUBLIC_API_BASE = 'https://5001-i8d09a2vc4cizj8qt1jla-c5cd14fd.sg2.manus.computer/api';
+const API_BASE = (configuredApiBase || PUBLIC_API_BASE).replace(/\/$/, '');
 export const CROP_CRED_API_BASE = API_BASE;
-export const CROP_CRED_API_CONFIGURED = Boolean(configuredApiBase);
+export const CROP_CRED_API_CONFIGURED = Boolean(configuredApiBase || PUBLIC_API_BASE);
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { headers: { 'Content-Type': 'application/json' }, ...options });
