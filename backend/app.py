@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 import re
 import json
 import urllib.request
@@ -9,8 +10,11 @@ from flask_cors import CORS
 from database import get_connection, init_db, seed_db
 
 app = Flask(__name__)
-CORS(app, resources={r'/api/*': {'origins': '*'}})
-DEVNET_RPC = 'https://api.devnet.solana.com'
+CORS_ORIGINS = [origin.strip() for origin in os.getenv('CROP_CRED_CORS_ORIGINS', '*').split(',') if origin.strip()]
+CORS(app, resources={r'/api/*': {'origins': CORS_ORIGINS}})
+DEVNET_RPC = os.getenv('SOLANA_DEVNET_RPC_URL', 'https://api.devnet.solana.com')
+if 'devnet' not in DEVNET_RPC.lower():
+    raise RuntimeError('CropCred only supports a Solana Devnet RPC endpoint.')
 DEMO_SOL_AMOUNT = 0.001
 
 
@@ -528,4 +532,4 @@ def get_verification_events(): return ok(_records('credential_verification_event
 def create_verification_event(): return _create_record('credential_verification_events', ['credential_id','verifier_type','event_type','timestamp','success'], ['credential_id','verifier_type','event_type','timestamp'])
 
 if __name__ == '__main__':
-    init_db(); seed_db(); app.run(host='0.0.0.0', port=5000, debug=True)
+    init_db(); seed_db(); app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5000')), debug=False)
