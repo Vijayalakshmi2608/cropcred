@@ -8,7 +8,9 @@ export const CROP_CRED_API_BASE = API_BASE;
 export const CROP_CRED_API_CONFIGURED = Boolean(configuredApiBase || PUBLIC_API_BASE);
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const headers = new Headers(options?.headers);
+  if (options?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   const body = await response.json();
   if (!response.ok || body.success === false) throw new Error(typeof body.error === 'string' ? body.error : body.error?.message || 'Request failed');
   return body.data ?? body;
