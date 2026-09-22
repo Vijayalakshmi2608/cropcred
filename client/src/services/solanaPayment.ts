@@ -9,7 +9,8 @@ export function getDevnetRpcUrl() {
   const url = configured || clusterApiUrl('devnet');
   let hostname = '';
   try { hostname = new URL(url).hostname.toLowerCase(); } catch { throw new Error('The Solana RPC endpoint is invalid. CropCred requires Solana Devnet.'); }
-  if (!hostname.includes('devnet') || hostname.includes('mainnet') || hostname.includes('localhost') || hostname === '127.0.0.1') throw new Error('CropCred only supports a Solana Devnet RPC endpoint.');
+  const isDevnetHost = hostname === 'devnet.solana.com' || hostname.endsWith('.devnet.solana.com');
+  if (!isDevnetHost || hostname.includes('mainnet')) throw new Error('CropCred only supports a Solana Devnet RPC endpoint.');
   return url;
 }
 

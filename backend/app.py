@@ -15,7 +15,8 @@ CORS_ORIGINS = [origin.strip() for origin in os.getenv('CROP_CRED_CORS_ORIGINS',
 CORS(app, resources={r'/api/*': {'origins': CORS_ORIGINS}})
 DEVNET_RPC = os.getenv('SOLANA_DEVNET_RPC_URL', 'https://api.devnet.solana.com')
 _rpc_host = (urlparse(DEVNET_RPC).hostname or '').lower()
-if not DEVNET_RPC.lower().startswith(('https://', 'http://')) or 'devnet.solana.com' not in _rpc_host or 'mainnet' in _rpc_host:
+_is_devnet_host = _rpc_host == 'devnet.solana.com' or _rpc_host.endswith('.devnet.solana.com')
+if not DEVNET_RPC.lower().startswith(('https://', 'http://')) or not _is_devnet_host or 'mainnet' in _rpc_host:
     raise RuntimeError('CropCred only supports a Solana Devnet RPC endpoint.')
 DEMO_SOL_AMOUNT = 0.001
 
