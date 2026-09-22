@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Connection, PublicKey, clusterApiUrl, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { SolanaMobileWalletAdapter, createDefaultAddressSelector, createDefaultAuthorizationResultCache } from '@solana-mobile/wallet-adapter-mobile';
 import { updateFarmerWallet } from '../services/api';
+import { getDevnetRpcUrl } from '../services/solanaPayment';
 
 type BrowserWalletProvider = { isPhantom?: boolean; isConnected?: boolean; publicKey?: { toString(): string }; network?: string; connect: () => Promise<{ publicKey?: { toString(): string }}>; disconnect: () => Promise<void>; signAndSendTransaction?: (transaction: any) => Promise<{ signature: string }>; on?: (event: string, callback: (...args: any[]) => void) => void; off?: (event: string, callback: (...args: any[]) => void) => void };
 
@@ -39,7 +40,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
 
   const refreshBalance = useCallback(async () => {
     if (!publicKey || network !== 'devnet') return;
-    try { const connection = new Connection(import.meta.env.VITE_SOLANA_RPC_URL || clusterApiUrl('devnet'), 'confirmed'); setBalance((await connection.getBalance(new PublicKey(publicKey))) / LAMPORTS_PER_SOL); }
+    try { const connection = new Connection(getDevnetRpcUrl(), 'confirmed'); setBalance((await connection.getBalance(new PublicKey(publicKey))) / LAMPORTS_PER_SOL); }
     catch { setBalance(null); }
   }, [network, publicKey]);
 

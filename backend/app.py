@@ -4,6 +4,7 @@ import re
 import json
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 import hashlib
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -13,7 +14,8 @@ app = Flask(__name__)
 CORS_ORIGINS = [origin.strip() for origin in os.getenv('CROP_CRED_CORS_ORIGINS', '*').split(',') if origin.strip()]
 CORS(app, resources={r'/api/*': {'origins': CORS_ORIGINS}})
 DEVNET_RPC = os.getenv('SOLANA_DEVNET_RPC_URL', 'https://api.devnet.solana.com')
-if 'devnet' not in DEVNET_RPC.lower():
+_rpc_host = (urlparse(DEVNET_RPC).hostname or '').lower()
+if not DEVNET_RPC.lower().startswith(('https://', 'http://')) or 'devnet.solana.com' not in _rpc_host or 'mainnet' in _rpc_host:
     raise RuntimeError('CropCred only supports a Solana Devnet RPC endpoint.')
 DEMO_SOL_AMOUNT = 0.001
 
@@ -90,6 +92,11 @@ def valid_solana_address(value):
 
 def explorer_url(signature):
     return f'https://explorer.solana.com/tx/{signature}?cluster=devnet'
+
+
+def mark_payment_failed(connection, payment_id):
+    connection.execute("UPDATE payments SET status='FAILED' WHERE id=? AND status='PROCESSING'", (payment_id,))
+    connection.commit()
 
 
 def credential_snapshot(connection, farmer_id):
@@ -365,7 +372,11 @@ def payment_intent(order_id):
     if order['status'] in {'PAID', 'COMPLETED'} or order['payment_status'] == 'PAID': connection.close(); return fail('This order has already been paid.', 409)
     if not valid_solana_address(order['recipient_wallet']): connection.close(); return fail('This seller has not connected a settlement wallet yet.', 409)
     payment_id = f'payment-{order_id}'
-    connection.execute('INSERT INTO payments (id,order_id,payer_wallet,recipient_wallet,amount_sol,network,status) VALUES (?,?,?,?,?,?,?)', (payment_id, order_id, payer_wallet, order['recipient_wallet'], DEMO_SOL_AMOUNT, 'devnet', 'PROCESSING'))
+    failed = connection.execute("SELECT id FROM payments WHERE order_id=? AND status='FAILED'", (order_id,)).fetchone()
+    if failed:
+        connection.execute("UPDATE payments SET payer_wallet=?, recipient_wallet=?, amount_sol=?, network='devnet', transaction_signature=NULL, block_time=NULL, verified_at=NULL, status='PROCESSING' WHERE id=?", (payer_wallet, order['recipient_wallet'], DEMO_SOL_AMOUNT, failed['id']))
+    else:
+        connection.execute('INSERT INTO payments (id,order_id,payer_wallet,recipient_wallet,amount_sol,network,status) VALUES (?,?,?,?,?,?,?)', (payment_id, order_id, payer_wallet, order['recipient_wallet'], DEMO_SOL_AMOUNT, 'devnet', 'PROCESSING'))
     connection.execute("UPDATE orders SET status='PAYMENT_PROCESSING' WHERE id=?", (order_id,)); connection.commit(); connection.close()
     return ok({'state': 'AWAITING_WALLET_APPROVAL', 'payment_id': payment_id, 'order_id': order_id, 'amount_sol': DEMO_SOL_AMOUNT, 'network': 'devnet', 'recipient_wallet': order['recipient_wallet']})
 
@@ -376,23 +387,38 @@ def verify_payment(order_id):
     if not signature or not valid_solana_address(payer_wallet) or data.get('network') != 'devnet': return fail('Payment signature, buyer wallet, and Devnet network are required.')
     connection = get_connection()
     order = connection.execute('SELECT o.*, f.wallet_address AS recipient_wallet FROM orders o JOIN farmers f ON f.id=o.farmer_id WHERE o.id=?', (order_id,)).fetchone()
-    payment = connection.execute("SELECT * FROM payments WHERE order_id=? AND status='PROCESSING'", (order_id,)).fetchone()
     if not order: connection.close(); return fail('Order not found', 404)
-    if not payment or payment['payer_wallet'] != payer_wallet: connection.close(); return fail('Payment could not be verified.')
+    existing_signature = connection.execute('SELECT * FROM payments WHERE transaction_signature=?', (signature,)).fetchone()
+    if existing_signature:
+        if existing_signature['order_id'] != order_id:
+            connection.close(); return fail('This transaction signature has already been used for another order.', 409)
+        if existing_signature['status'] == 'VERIFIED':
+            result = dict(existing_signature); connection.close(); result.update({'state': 'VERIFIED', 'explorer_url': explorer_url(signature)}); return ok(result)
+    payment = connection.execute("SELECT * FROM payments WHERE order_id=? AND status='PROCESSING'", (order_id,)).fetchone()
+    if not payment or payment['payer_wallet'] != payer_wallet or payment['network'] != 'devnet': connection.close(); return fail('Payment could not be verified.')
     if not valid_solana_address(order['recipient_wallet']): connection.close(); return fail('Seller settlement wallet is missing or does not match.')
     try:
         tx = rpc_call('getTransaction', [signature, {'encoding': 'jsonParsed', 'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
         if not tx or tx.get('meta', {}).get('err') is not None: raise ValueError()
+        statuses = rpc_call('getSignatureStatuses', [[signature], {'searchTransactionHistory': True}]) or {}
+        confirmation = (statuses.get('value') or [None])[0] or {}
+        if confirmation.get('err') is not None or confirmation.get('confirmationStatus') not in ('confirmed', 'finalized'): raise ValueError()
         account_keys = [item.get('pubkey') if isinstance(item, dict) else item for item in tx.get('transaction', {}).get('message', {}).get('accountKeys', [])]
         valid_transfer = False
+        expected_lamports = int(round(float(payment['amount_sol']) * 1_000_000_000))
         for instruction in tx.get('transaction', {}).get('message', {}).get('instructions', []):
             parsed = instruction.get('parsed', {}) if isinstance(instruction, dict) else {}; info = parsed.get('info', {})
-            if parsed.get('type') == 'transfer' and info.get('source') == payer_wallet and info.get('destination') == order['recipient_wallet'] and int(info.get('lamports', 0)) >= int(DEMO_SOL_AMOUNT * 1_000_000_000): valid_transfer = True
-        if payer_wallet not in account_keys or not valid_transfer: raise ValueError()
+            if parsed.get('type') == 'transfer' and info.get('source') == payer_wallet and info.get('destination') == payment['recipient_wallet'] and int(info.get('lamports', 0)) == expected_lamports: valid_transfer = True
+        if not account_keys or account_keys[0] != payer_wallet or payment['recipient_wallet'] != order['recipient_wallet'] or not valid_transfer: raise ValueError()
     except Exception:
+        mark_payment_failed(connection, payment['id'])
+        connection.execute("UPDATE orders SET status='PAYMENT_FAILED' WHERE id=? AND payment_status='PENDING'", (order_id,)); connection.commit()
         connection.close(); return fail('Blockchain verification is temporarily unavailable. Your order remains unpaid until verification succeeds.')
     now = datetime.now().isoformat(timespec='seconds')
-    connection.execute("UPDATE payments SET transaction_signature=?, status='VERIFIED', block_time=?, verified_at=? WHERE id=?", (signature, tx.get('blockTime'), now, payment['id']))
+    try:
+        connection.execute("UPDATE payments SET transaction_signature=?, status='VERIFIED', block_time=?, verified_at=? WHERE id=?", (signature, tx.get('blockTime'), now, payment['id']))
+    except Exception:
+        connection.rollback(); connection.close(); return fail('This transaction signature has already been consumed.', 409)
     connection.execute("UPDATE orders SET status='PAID', payment_status='PAID', transaction_signature=? WHERE id=?", (signature, order_id))
     connection.execute('UPDATE economic_credentials SET evidence_count=evidence_count+1, verified_transaction_count=verified_transaction_count+1, updated_at=? WHERE farmer_id=?', (now, order['farmer_id']))
     connection.commit(); result = dict(connection.execute('SELECT * FROM payments WHERE id=?', (payment['id'],)).fetchone()); connection.close()

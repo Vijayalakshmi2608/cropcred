@@ -4,7 +4,16 @@ const DEVNET = 'devnet';
 export const DEMO_SETTLEMENT_SOL = 0.001;
 export const DEVNET_WARNING = 'Solana Devnet — Test Network — No Real Monetary Value';
 
-export function getDevnetConnection() { return new Connection(import.meta.env.VITE_SOLANA_RPC_URL || clusterApiUrl('devnet'), 'confirmed'); }
+export function getDevnetRpcUrl() {
+  const configured = String(import.meta.env.VITE_SOLANA_RPC_URL || '').trim();
+  const url = configured || clusterApiUrl('devnet');
+  let hostname = '';
+  try { hostname = new URL(url).hostname.toLowerCase(); } catch { throw new Error('The Solana RPC endpoint is invalid. CropCred requires Solana Devnet.'); }
+  if (!hostname.includes('devnet') || hostname.includes('mainnet') || hostname.includes('localhost') || hostname === '127.0.0.1') throw new Error('CropCred only supports a Solana Devnet RPC endpoint.');
+  return url;
+}
+
+export function getDevnetConnection() { return new Connection(getDevnetRpcUrl(), 'confirmed'); }
 export function getExplorerUrl(signature: string) { return `https://explorer.solana.com/tx/${signature}?cluster=devnet`; }
 export function validateDevnetWallet(publicKey: string | null) { if (!publicKey) throw new Error('Connect your Solana wallet to continue.'); try { return new PublicKey(publicKey); } catch { throw new Error('The connected wallet address is invalid.'); } }
 
