@@ -61,6 +61,16 @@ def harvest_payload(item):
     return item
 
 
+def crop_batch_payload(item):
+    if not item: return None
+    item = dict(item)
+    item['price_range_label'] = f"₹{item['expected_price_min']:g}–₹{item['expected_price_max']:g}/{item['unit']}"
+    item['harvest_date_label'] = item['harvest_date']
+    item['availability_label'] = item['availability_status'].replace('_', ' ').title()
+    item['quality_label'] = item['quality_status'].replace('_', ' ').title()
+    return item
+
+
 def listing_payload(item):
     if not item: return None
     item['price_label'] = f"₹{item['price_per_unit']:g}/{item['unit']}"
@@ -109,31 +119,36 @@ def credential_snapshot(connection, farmer_id):
     deliveries = connection.execute("SELECT COUNT(*) AS count FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.farmer_id=? AND d.status='DELIVERED'", (farmer_id,)).fetchone()['count']
     trade_value = connection.execute("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE farmer_id=? AND payment_status='PAID'", (farmer_id,)).fetchone()['value']
     total_orders = connection.execute('SELECT COUNT(*) AS count FROM orders WHERE farmer_id=?', (farmer_id,)).fetchone()['count']
-    canonical = {'farmer_id': farmer_id, 'harvests': harvests, 'sales': sales, 'payments': payments_count, 'deliveries': deliveries, 'trade_value': trade_value}
+    batch_rows = connection.execute('SELECT id, fingerprint FROM crop_batches WHERE farmer_id=? ORDER BY id', (farmer_id,)).fetchall()
+    batch_count = len(batch_rows)
+    canonical = {'farmer_id': farmer_id, 'harvests': harvests, 'sales': sales, 'payments': payments_count, 'deliveries': deliveries, 'trade_value': trade_value, 'crop_batches': [dict(item) for item in batch_rows]}
     fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     credential = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone()
     now = datetime.now().isoformat(timespec='seconds')
     if credential:
         version = credential['version'] if credential['fingerprint'] == fingerprint else credential['version'] + 1
-        connection.execute('''UPDATE economic_credentials SET version=?, status=?, fingerprint=?, credential_hash=?, evidence_count=?, verified_transaction_count=?, updated_at=? WHERE farmer_id=?''', (version, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, harvests + sales + payments_count + deliveries, payments_count, now, farmer_id))
+        connection.execute('''UPDATE economic_credentials SET version=?, status=?, fingerprint=?, credential_hash=?, evidence_count=?, verified_transaction_count=?, updated_at=? WHERE farmer_id=?''', (version, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, harvests + sales + payments_count + deliveries + batch_count, payments_count, now, farmer_id))
     else:
         credential_id = f'CR-CRED-{farmer_id[-2:].upper()}'
-        connection.execute('''INSERT INTO economic_credentials (id,farmer_id,credential_id,credential_type,evidence_count,verified_transaction_count,version,status,fingerprint,credential_hash,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (f'credential-{farmer_id}', farmer_id, credential_id, 'ECONOMIC_CREDENTIAL', harvests + sales + payments_count + deliveries, payments_count, 1, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, now))
+        connection.execute('''INSERT INTO economic_credentials (id,farmer_id,credential_id,credential_type,evidence_count,verified_transaction_count,version,status,fingerprint,credential_hash,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (f'credential-{farmer_id}', farmer_id, credential_id, 'ECONOMIC_CREDENTIAL', harvests + sales + payments_count + deliveries + batch_count, payments_count, 1, 'VERIFIED' if payments_count else 'PENDING_VERIFICATION', fingerprint, fingerprint, now))
     credential_row = connection.execute('SELECT id FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone()
     evidence_rows = []
     for item in connection.execute("SELECT id FROM harvests WHERE farmer_id=? AND status='VERIFIED'", (farmer_id,)).fetchall(): evidence_rows.append(('HARVEST_REGISTERED', 'harvest', item['id'], 1))
     for item in connection.execute('SELECT id FROM orders WHERE farmer_id=?', (farmer_id,)).fetchall(): evidence_rows.append(('ORDER_CREATED', 'order', item['id'], 1))
     for item in connection.execute("SELECT p.id FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,)).fetchall(): evidence_rows.append(('PAYMENT_VERIFIED', 'payment', item['id'], 1))
     for item in connection.execute("SELECT d.id FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.farmer_id=? AND d.status='DELIVERED'", (farmer_id,)).fetchall(): evidence_rows.append(('DELIVERY_CONFIRMED', 'delivery', item['id'], 1))
+    for item in batch_rows: evidence_rows.append(('CROP_BATCH_CREATED', 'crop_batch', item['id'], 1))
     for evidence_type, reference_type, reference_id, verified in evidence_rows:
         connection.execute('INSERT OR IGNORE INTO credential_evidence (id,credential_id,evidence_type,reference_type,reference_id,verified) VALUES (?,?,?,?,?,?)', (f'{evidence_type.lower()}-{reference_id}', credential_row['id'], evidence_type, reference_type, reference_id, verified))
     connection.commit()
-    return {'farmer': farmer_payload(farmer), 'verified_harvests': harvests, 'completed_sales': sales, 'verified_payments': payments_count, 'verified_deliveries': deliveries, 'verified_trade_value': trade_value, 'total_orders': total_orders, 'fulfillment_rate': round(deliveries / total_orders * 100) if total_orders else None}
+    return {'farmer': farmer_payload(farmer), 'verified_harvests': harvests, 'completed_sales': sales, 'verified_payments': payments_count, 'verified_deliveries': deliveries, 'verified_trade_value': trade_value, 'crop_batches': batch_count, 'total_orders': total_orders, 'fulfillment_rate': round(deliveries / total_orders * 100) if total_orders else None}
 
 
 def credential_evidence(connection, farmer_id):
     rows = connection.execute('''SELECT o.id AS order_id, o.created_at, o.quantity, o.unit, o.total_amount, o.buyer_name, o.payment_status, o.transaction_signature, h.id AS harvest_id, h.crop, h.harvest_date, d.status AS delivery_status, p.status AS blockchain_status, p.payer_wallet, p.recipient_wallet, p.amount_sol, p.verified_at FROM orders o JOIN harvests h ON h.id=o.harvest_id LEFT JOIN deliveries d ON d.order_id=o.id LEFT JOIN payments p ON p.order_id=o.id AND p.status='VERIFIED' WHERE o.farmer_id=? ORDER BY o.created_at DESC''', (farmer_id,)).fetchall()
-    return [dict(item) for item in rows]
+    result = [dict(item) for item in rows]
+    batch_rows = connection.execute('''SELECT b.id AS batch_id, b.created_at, b.harvest_id, b.crop_name AS crop, b.quantity, b.unit, b.expected_price_min, b.expected_price_max, b.availability_status, b.quality_status, b.fingerprint, 'CROP_BATCH_CREATED' AS evidence_type FROM crop_batches b WHERE b.farmer_id=? ORDER BY b.created_at DESC''', (farmer_id,)).fetchall()
+    return result + [dict(item) for item in batch_rows]
 
 @app.get('/api/health')
 def health():
@@ -187,6 +202,57 @@ def get_harvests():
 def get_harvest(harvest_id):
     item = harvest_payload(row('SELECT h.*, f.name AS farmer FROM harvests h JOIN farmers f ON f.id=h.farmer_id WHERE h.id=?', (harvest_id,)))
     return ok(item) if item else fail('Harvest not found', 404)
+
+
+def crop_batch_query(connection, where='1=1', params=()):
+    return [crop_batch_payload(item) for item in connection.execute(f'''SELECT b.*, f.name AS farmer, h.id AS linked_harvest_id, h.crop AS harvest_crop, h.status AS harvest_status
+      FROM crop_batches b JOIN farmers f ON f.id=b.farmer_id JOIN harvests h ON h.id=b.harvest_id WHERE {where} ORDER BY b.created_at DESC''', params).fetchall()]
+
+
+@app.get('/api/crop-batches')
+def get_crop_batches():
+    connection = get_connection(); items = crop_batch_query(connection); connection.close(); return ok(items)
+
+
+@app.get('/api/crop-batches/<batch_id>')
+def get_crop_batch(batch_id):
+    connection = get_connection(); items = crop_batch_query(connection, 'b.id=?', (batch_id,)); connection.close()
+    return ok(items[0]) if items else fail('Crop batch not found', 404)
+
+
+@app.post('/api/crop-batches')
+def create_crop_batch():
+    data = request.get_json(silent=True) or {}
+    harvest_id = str(data.get('harvest_id', '')).strip(); variety = str(data.get('variety', '')).strip()
+    if not harvest_id or not variety: return fail('A linked harvest and variety are required.')
+    connection = get_connection()
+    harvest = connection.execute('SELECT h.*, f.name AS farmer FROM harvests h JOIN farmers f ON f.id=h.farmer_id WHERE h.id=?', (harvest_id,)).fetchone()
+    if not harvest: connection.close(); return fail('Linked harvest not found', 404)
+    existing = connection.execute('SELECT id FROM crop_batches WHERE harvest_id=?', (harvest_id,)).fetchone()
+    if existing:
+        item = crop_batch_query(connection, 'b.id=?', (existing['id'],))[0]; connection.close(); return ok(item)
+    try:
+        quantity = float(data.get('quantity', harvest['quantity'])); price_min = float(data.get('expected_price_min', harvest['expected_price'])); price_max = float(data.get('expected_price_max', price_min))
+    except (TypeError, ValueError):
+        connection.close(); return fail('Quantity and expected price range must be numbers.')
+    if quantity <= 0 or quantity > harvest['quantity'] or price_min < 0 or price_max < price_min: connection.close(); return fail('Use a positive quantity within the harvest and a valid price range.')
+    availability = str(data.get('availability_status', 'AVAILABLE')).upper(); quality = str(data.get('quality_status', 'PENDING')).upper()
+    if availability not in {'AVAILABLE', 'RESERVED', 'SOLD', 'UNAVAILABLE'} or quality not in {'PENDING', 'SELF_DECLARED', 'CERTIFICATION_PENDING', 'CERTIFIED'}:
+        connection.close(); return fail('Invalid availability or quality status.')
+    canonical = {'harvest_id': harvest_id, 'farmer_id': harvest['farmer_id'], 'crop_name': harvest['crop'], 'variety': variety, 'quantity': quantity, 'unit': data.get('unit', harvest['unit']), 'harvest_date': harvest['harvest_date'], 'expected_price_min': price_min, 'expected_price_max': price_max, 'availability_status': availability, 'quality_status': quality}
+    fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    next_number = 1042
+    while connection.execute('SELECT 1 FROM crop_batches WHERE id=?', (f'CRP-{next_number}',)).fetchone(): next_number += 1
+    batch_id = f'CRP-{next_number}'
+    try:
+        connection.execute('''INSERT INTO crop_batches (id,farmer_id,harvest_id,crop_name,variety,quantity,unit,harvest_date,expected_price_min,expected_price_max,availability_status,quality_status,fingerprint)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (batch_id, harvest['farmer_id'], harvest_id, harvest['crop'], variety, quantity, canonical['unit'], harvest['harvest_date'], price_min, price_max, availability, quality, fingerprint))
+        credential_snapshot(connection, harvest['farmer_id'])
+        item = crop_batch_query(connection, 'b.id=?', (batch_id,))[0]
+        connection.close(); return ok(item, 201)
+    except Exception:
+        connection.rollback(); connection.close(); return fail('Could not create the crop batch.', 400)
+
 
 @app.post('/api/harvests')
 def create_harvest():

@@ -34,6 +34,7 @@ import { useSolanaWallet } from '../contexts/SolanaWalletContext';
 export const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: Sparkles, group: 'Operate' },
   { href: '/harvests', label: 'Harvests', icon: Leaf, group: 'Operate' },
+  { href: '/crop-batches', label: 'Crop Batches', icon: PackageCheck, group: 'Operate' },
   { href: '/marketplace', label: 'Marketplace', icon: PackageCheck, group: 'Operate' },
   { href: '/b2b', label: 'B2B Demand', icon: ClipboardCheck, group: 'Operate' },
   { href: '/orders', label: 'Orders', icon: Truck, group: 'Operate' },

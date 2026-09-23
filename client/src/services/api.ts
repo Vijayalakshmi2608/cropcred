@@ -23,6 +23,9 @@ export function mapOrder(item: any): Order { const statusMap: Record<string, Ord
 export function mapDemand(item: any): Demand { return { id: item.id, buyerType: item.buyer_type, buyer: item.buyer_name, crop: item.crop, quantity: item.quantity_label || `${item.quantity} ${item.unit}`, price: item.price_label || `₹${item.price_min}–₹${item.price_max}/${item.unit}`, location: item.location, due: item.deadline, dueTone: String(item.deadline).toLowerCase().includes('day') && !String(item.deadline).includes('12') ? 'urgent' : 'calm' }; }
 export async function getHarvests(): Promise<Harvest[]> { return (await request<any[]>('/harvests')).map(mapHarvest); }
 export async function createHarvest(data: any): Promise<Harvest> { return mapHarvest(await request<any>('/harvests', { method: 'POST', body: JSON.stringify(data) })); }
+export async function getCropBatches() { return request<any[]>('/crop-batches'); }
+export async function getCropBatch(id: string) { return request<any>(`/crop-batches/${id}`); }
+export async function createCropBatch(data: any) { return request<any>('/crop-batches', { method: 'POST', body: JSON.stringify(data) }); }
 export async function getMarketplaceListings(): Promise<Listing[]> { return (await request<any[]>('/marketplace')).map(mapListing); }
 export async function getDemands(): Promise<Demand[]> { return (await request<any[]>('/demands')).map(mapDemand); }
 export async function getDemandNetwork() { return request<any[]>('/demands'); }

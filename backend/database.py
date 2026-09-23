@@ -29,6 +29,22 @@ CREATE TABLE IF NOT EXISTS harvests (
   proof_hash TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS crop_batches (
+  id TEXT PRIMARY KEY,
+  farmer_id TEXT NOT NULL REFERENCES farmers(id),
+  harvest_id TEXT NOT NULL UNIQUE REFERENCES harvests(id),
+  crop_name TEXT NOT NULL,
+  variety TEXT NOT NULL,
+  quantity REAL NOT NULL CHECK(quantity > 0),
+  unit TEXT NOT NULL,
+  harvest_date TEXT NOT NULL,
+  expected_price_min REAL NOT NULL CHECK(expected_price_min >= 0),
+  expected_price_max REAL NOT NULL CHECK(expected_price_max >= expected_price_min),
+  availability_status TEXT NOT NULL CHECK(availability_status IN ('AVAILABLE','RESERVED','SOLD','UNAVAILABLE')),
+  quality_status TEXT NOT NULL CHECK(quality_status IN ('PENDING','SELF_DECLARED','CERTIFICATION_PENDING','CERTIFIED')),
+  fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS marketplace_listings (
   id TEXT PRIMARY KEY,
   harvest_id TEXT NOT NULL REFERENCES harvests(id),
