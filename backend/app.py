@@ -18,6 +18,10 @@ _rpc_host = (urlparse(DEVNET_RPC).hostname or '').lower()
 _is_devnet_host = _rpc_host == 'devnet.solana.com' or _rpc_host.endswith('.devnet.solana.com')
 if not DEVNET_RPC.lower().startswith(('https://', 'http://')) or not _is_devnet_host or 'mainnet' in _rpc_host:
     raise RuntimeError('CropCred only supports a Solana Devnet RPC endpoint.')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
+OPENROUTER_FREE_MODEL = os.getenv('OPENROUTER_FREE_MODEL', 'meta-llama/llama-3.1-8b-instruct:free')
+OPENROUTER_BEST_MODEL = os.getenv('OPENROUTER_BEST_MODEL', 'anthropic/claude-3.5-sonnet')
+OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1/chat/completions')
 DEMO_SOL_AMOUNT = 0.001
 
 
@@ -87,6 +91,24 @@ def order_payload(item):
     return item
 
 
+def auction_payload(item):
+    if not item: return None
+    item = dict(item)
+    item['price_range_label'] = f"₹{item['price_min']:g}–₹{item['price_max']:g}/{item['unit']}"
+    item['deadline_label'] = item.get('deadline', '')
+    return item
+
+
+def create_order_record(connection, farmer_id, buyer_name, buyer_type, harvest_id, quantity, unit, total_amount):
+    order_count = connection.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
+    order_id = f"CR-ORD-{order_count + 232:05d}"
+    connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature)
+      VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, harvest_id, farmer_id, buyer_name, buyer_type, quantity, unit, total_amount))
+    connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING'))
+    created = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone())
+    return created
+
+
 def rpc_call(method, params):
     payload = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}).encode()
     request = urllib.request.Request(DEVNET_RPC, data=payload, headers={'Content-Type': 'application/json'})
@@ -138,6 +160,9 @@ def credential_snapshot(connection, farmer_id):
     for item in connection.execute("SELECT p.id FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.farmer_id=? AND p.status='VERIFIED'", (farmer_id,)).fetchall(): evidence_rows.append(('PAYMENT_VERIFIED', 'payment', item['id'], 1))
     for item in connection.execute("SELECT d.id FROM deliveries d JOIN orders o ON o.id=d.order_id WHERE o.farmer_id=? AND d.status='DELIVERED'", (farmer_id,)).fetchall(): evidence_rows.append(('DELIVERY_CONFIRMED', 'delivery', item['id'], 1))
     for item in batch_rows: evidence_rows.append(('CROP_BATCH_CREATED', 'crop_batch', item['id'], 1))
+    for item in connection.execute("SELECT id FROM crop_auctions WHERE status='AWARDED' AND id IN (SELECT auction_id FROM auction_offers WHERE farmer_id=? AND status='ACCEPTED')", (farmer_id,)).fetchall(): evidence_rows.append(('AUCTION_AWARDED', 'auction', item['id'], 1))
+    for item in connection.execute("SELECT id FROM auction_offers WHERE farmer_id=? AND status='SUBMITTED'", (farmer_id,)).fetchall(): evidence_rows.append(('AUCTION_OFFER_SUBMITTED', 'auction_offer', item['id'], 1))
+    for item in connection.execute("SELECT id FROM crop_auctions WHERE crop_batch_id IN (SELECT id FROM crop_batches WHERE farmer_id=?)", (farmer_id,)).fetchall(): evidence_rows.append(('AUCTION_CREATED', 'auction', item['id'], 1))
     for evidence_type, reference_type, reference_id, verified in evidence_rows:
         connection.execute('INSERT OR IGNORE INTO credential_evidence (id,credential_id,evidence_type,reference_type,reference_id,verified) VALUES (?,?,?,?,?,?)', (f'{evidence_type.lower()}-{reference_id}', credential_row['id'], evidence_type, reference_type, reference_id, verified))
     connection.commit()
@@ -351,6 +376,86 @@ def get_demand_responses(demand_id):
         item['match_fit'] = min(100, 60 + (20 if item['quantity_offered'] >= demand['quantity'] * .5 else 10) + (10 if demand['price_min'] <= item['expected_price'] <= demand['price_max'] else 0) + (10 if item['verified_harvests'] else 0))
     return ok(responses)
 
+@app.get('/api/auctions')
+def get_auctions():
+    connection = get_connection()
+    auctions = [dict(item) for item in connection.execute('''SELECT a.*, COUNT(o.id) AS offer_count FROM crop_auctions a LEFT JOIN auction_offers o ON o.auction_id=a.id GROUP BY a.id ORDER BY a.created_at DESC''').fetchall()]
+    connection.close(); return ok([auction_payload(item) for item in auctions])
+
+@app.post('/api/auctions')
+def create_auction():
+    data = request.get_json(silent=True) or {}
+    required = ['buyer_name','buyer_type','crop','quantity','unit','price_min','price_max','deadline','delivery_location']
+    if any(data.get(key) in (None, '') for key in required): return fail('Buyer, crop, quantity, unit, pricing, deadline, and delivery location are required.')
+    try:
+        quantity = float(data['quantity']); price_min = float(data['price_min']); price_max = float(data['price_max'])
+    except (TypeError, ValueError): return fail('Quantity and pricing values must be numbers.')
+    if quantity <= 0 or price_min < 0 or price_max < price_min: return fail('Use a positive quantity and a valid price range.')
+    connection = get_connection(); auction_id = f"AUC-{connection.execute('SELECT COUNT(*) FROM crop_auctions').fetchone()[0] + 1001}"
+    crop_batch_id = data.get('crop_batch_id') or None
+    if crop_batch_id and not connection.execute('SELECT id FROM crop_batches WHERE id=?', (crop_batch_id,)).fetchone(): connection.close(); return fail('Selected crop batch was not found.', 404)
+    connection.execute('''INSERT INTO crop_auctions (id,buyer_name,buyer_type,crop,crop_batch_id,quantity,unit,price_min,price_max,deadline,delivery_location,quality_requirements,evidence_requirements,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (auction_id, str(data['buyer_name']).strip(), str(data['buyer_type']).upper(), str(data['crop']).strip(), crop_batch_id, quantity, str(data['unit']).strip() or 'kg', price_min, price_max, str(data['deadline']).strip(), str(data['delivery_location']).strip(), data.get('quality_requirements') or '', data.get('evidence_requirements') or '', 'OPEN', datetime.now().isoformat(timespec='seconds')))
+    connection.execute('INSERT OR IGNORE INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', (f'buyer-{auction_id}', str(data['buyer_name']).strip(), str(data['buyer_type']).upper(), 'VERIFIED'))
+    connection.commit(); item = dict(connection.execute('SELECT * FROM crop_auctions WHERE id=?', (auction_id,)).fetchone()); connection.close(); return ok(auction_payload(item), 201)
+
+@app.get('/api/auctions/<auction_id>')
+def get_auction(auction_id):
+    item = row('SELECT * FROM crop_auctions WHERE id=?', (auction_id,))
+    return ok(auction_payload(item)) if item else fail('Auction not found', 404)
+
+@app.post('/api/auctions/<auction_id>/offers')
+def create_auction_offer(auction_id):
+    data = request.get_json(silent=True) or {}
+    try: quantity = float(data.get('quantity')); offered_price = float(data.get('offered_price'))
+    except (TypeError, ValueError): return fail('Offered quantity and price are required.')
+    if quantity <= 0 or offered_price < 0: return fail('Offer quantity and price must be positive values.')
+    connection = get_connection(); auction = connection.execute('SELECT * FROM crop_auctions WHERE id=?', (auction_id,)).fetchone()
+    if not auction: connection.close(); return fail('Auction not found', 404)
+    if auction['status'] not in ('OPEN','OFFER_RECEIVED'):
+        connection.close(); return fail('This auction is no longer accepting offers.', 409)
+    farmer_id = str(data.get('farmer_id') or '').strip() or 'farmer-01'
+    if not connection.execute('SELECT id FROM farmers WHERE id=?', (farmer_id,)).fetchone(): connection.close(); return fail('Farmer not found', 404)
+    crop_batch_id = data.get('crop_batch_id') or None
+    if crop_batch_id and not connection.execute('SELECT id FROM crop_batches WHERE id=?', (crop_batch_id,)).fetchone(): connection.close(); return fail('This crop batch was not found.', 404)
+    offer_id = f"AOF-{connection.execute('SELECT COUNT(*) FROM auction_offers').fetchone()[0] + 1001}"
+    connection.execute('''INSERT INTO auction_offers (id,auction_id,farmer_id,crop_batch_id,quantity,offered_price,delivery_estimate,message,status,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''', (offer_id, auction_id, farmer_id, crop_batch_id, quantity, offered_price, str(data.get('delivery_estimate') or 'TBD').strip() or 'TBD', (data.get('message') or '').strip(), 'SUBMITTED', datetime.now().isoformat(timespec='seconds')))
+    connection.execute("UPDATE crop_auctions SET status='OFFER_RECEIVED', updated_at=? WHERE id=? AND status IN ('OPEN','OFFER_RECEIVED')", (datetime.now().isoformat(timespec='seconds'), auction_id));
+    connection.commit(); item = dict(connection.execute('SELECT * FROM auction_offers WHERE id=?', (offer_id,)).fetchone()); credential_snapshot(connection, farmer_id); connection.close(); return ok(item, 201)
+
+@app.get('/api/auctions/<auction_id>/offers')
+def get_auction_offers(auction_id):
+    connection = get_connection(); auction = connection.execute('SELECT * FROM crop_auctions WHERE id=?', (auction_id,)).fetchone();
+    if not auction: connection.close(); return fail('Auction not found', 404)
+    offers = [dict(item) for item in connection.execute('''SELECT ao.*, f.name AS farmer_name, f.location AS farmer_location, cb.crop_name, cb.variety, cb.quality_status FROM auction_offers ao LEFT JOIN farmers f ON f.id=ao.farmer_id LEFT JOIN crop_batches cb ON cb.id=ao.crop_batch_id WHERE ao.auction_id=? ORDER BY ao.created_at DESC''', (auction_id,)).fetchall()]
+    connection.close(); return ok(offers)
+
+@app.post('/api/auctions/<auction_id>/award')
+def award_auction_offer(auction_id):
+    data = request.get_json(silent=True) or {}
+    offer_id = str(data.get('offer_id') or '').strip();
+    if not offer_id: return fail('An offer_id is required to award the auction.')
+    connection = get_connection()
+    try:
+        auction = connection.execute('SELECT * FROM crop_auctions WHERE id=?', (auction_id,)).fetchone(); offer = connection.execute('SELECT * FROM auction_offers WHERE id=? AND auction_id=?', (offer_id, auction_id)).fetchone()
+        if not auction or not offer: return fail('Auction or offer not found', 404)
+        if auction['status'] not in ('OPEN','OFFER_RECEIVED','CLOSED'): return fail('This auction is not eligible to award a farmer.', 409)
+        if offer['status'] != 'SUBMITTED': return fail('This offer is no longer available to accept.', 409)
+        crop_batch = connection.execute('SELECT * FROM crop_batches WHERE id=?', (offer['crop_batch_id'],)).fetchone() if offer['crop_batch_id'] else None
+        if crop_batch and crop_batch['farmer_id'] == offer['farmer_id']:
+            harvest = connection.execute('SELECT * FROM harvests WHERE id=?', (crop_batch['harvest_id'],)).fetchone()
+        else:
+            harvest = connection.execute("SELECT * FROM harvests WHERE farmer_id=? AND crop LIKE ? AND status='VERIFIED' AND quantity>=? ORDER BY harvest_date DESC LIMIT 1", (offer['farmer_id'], auction['crop'], offer['quantity'])).fetchone()
+        if not harvest: return fail('This farmer has no valid verified harvest for the awarded auction quantity.', 409)
+        total_amount = float(offer['quantity']) * float(offer['offered_price'])
+        order = create_order_record(connection, offer['farmer_id'], auction['buyer_name'], auction['buyer_type'], harvest['id'], offer['quantity'], auction['unit'], total_amount)
+        connection.execute("UPDATE auction_offers SET status='ACCEPTED', updated_at=? WHERE auction_id=? AND id=?", (datetime.now().isoformat(timespec='seconds'), auction_id, offer_id))
+        connection.execute("UPDATE auction_offers SET status='REJECTED', updated_at=? WHERE auction_id=? AND id<>? AND status IN ('SUBMITTED','WITHDRAWN')", (datetime.now().isoformat(timespec='seconds'), auction_id, offer_id))
+        connection.execute("UPDATE crop_auctions SET status='AWARDED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), auction_id))
+        connection.commit(); credential_snapshot(connection, offer['farmer_id']); auction_row = dict(connection.execute('SELECT * FROM crop_auctions WHERE id=?', (auction_id,)).fetchone()); offer_row = dict(connection.execute('SELECT * FROM auction_offers WHERE id=?', (offer_id,)).fetchone());
+        return ok({'auction': auction_payload(auction_row), 'offer': offer_row, 'order': order})
+    finally:
+        connection.close()
+
 @app.post('/api/demands/<demand_id>/accept/<response_id>')
 def accept_demand_response(demand_id, response_id):
     connection = get_connection(); demand = connection.execute('SELECT * FROM demands WHERE id=?', (demand_id,)).fetchone(); response = connection.execute('SELECT * FROM demand_responses WHERE id=? AND demand_id=?', (response_id, demand_id)).fetchone()
@@ -542,8 +647,244 @@ def get_passport(farmer_id):
     if not snapshot: return fail('Farmer not found', 404)
     return ok({**snapshot, 'credential': dict(credential) if credential else None, 'activity': evidence})
 
+@app.get('/api/market-intelligence')
+def get_market_intelligence():
+    connection = get_connection()
+    payload = _market_intelligence_payload(connection)
+    connection.close()
+    return ok(payload)
+
 def _count(connection, query, params=()):
     return connection.execute(query, params).fetchone()[0]
+
+
+def _openrouter_response(model_name, payload):
+    if not OPENROUTER_API_KEY:
+        raise ValueError('OPENROUTER_API_KEY is not configured.')
+    request_data = {
+        'model': model_name,
+        'messages': [{
+            'role': 'user',
+            'content': payload,
+        }],
+        'temperature': 0.2,
+        'top_p': 0.9,
+    }
+    req = urllib.request.Request(
+        OPENROUTER_BASE_URL,
+        data=json.dumps(request_data).encode('utf-8'),
+        headers={
+            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://cropcred.local',
+            'X-Title': 'CropCred Market Intelligence',
+        },
+        method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        body = json.loads(response.read().decode('utf-8'))
+    if body.get('error'):
+        raise ValueError(str(body['error']))
+    try:
+        return body['choices'][0]['message']['content']
+    except (KeyError, TypeError, IndexError):
+        return body.get('choices', [{}])[0].get('text', '')
+
+
+def _parse_ai_insights(raw_text):
+    text = (raw_text or '').strip()
+    if not text:
+        raise ValueError('Empty OpenRouter response.')
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            parsed = parsed.get('insights', [])
+        if not isinstance(parsed, list):
+            raise ValueError('OpenRouter response did not contain a list of insights.')
+        normalized = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            if not item.get('text'):
+                continue
+            normalized.append({
+                'title': item.get('title', 'CropCred insight'),
+                'text': item['text'],
+                'source': 'CropCred records',
+                'type': 'AI-generated insight',
+            })
+        if normalized:
+            return normalized
+        raise ValueError('No valid insights produced by OpenRouter.')
+    except json.JSONDecodeError:
+        fallback = []
+        for chunk in re.split(r'\n\s*\n|\s*\*\s*', text):
+            candidate = chunk.strip()
+            if candidate and len(candidate) > 20:
+                fallback.append({
+                    'title': 'AI insight',
+                    'text': candidate.replace('Source:', '').replace('Type:', '').strip(),
+                    'source': 'CropCred records',
+                    'type': 'AI-generated insight',
+                })
+        if fallback:
+            return fallback[:3]
+        raise ValueError('OpenRouter response was not valid JSON or insight text.')
+
+
+def _build_rule_based_insights(crop_demand, price_observations):
+    if not crop_demand or not price_observations.get('transaction_count'):
+        return [{
+            'title': 'Market intelligence unavailable',
+            'text': 'Insufficient CropCred data for a reliable insight.',
+            'source': 'CropCred records',
+            'type': 'Data-derived insight',
+        }]
+    top_crop = max(crop_demand, key=lambda item: (item['demand_count'], item['available_quantity']))
+    strongest_supply = max(crop_demand, key=lambda item: item['available_quantity'])
+    average_price = price_observations.get('average_observed_price')
+    return [
+        {
+            'title': 'Demand concentration',
+            'text': f"{top_crop['crop']} demand is currently concentrated around the available CropCred listings.",
+            'source': 'CropCred records',
+            'type': 'Data-derived insight',
+        },
+        {
+            'title': 'Supply coverage',
+            'text': f"{strongest_supply['crop']} has the broadest observed available CropCred supply across recorded batches.",
+            'source': 'CropCred records',
+            'type': 'Data-derived insight',
+        },
+        {
+            'title': 'Observed pricing',
+            'text': f"Observed CropCred pricing for the current order history averages ₹{average_price} per unit across {price_observations.get('transaction_count')} recorded transactions.",
+            'source': 'CropCred records',
+            'type': 'Data-derived insight',
+        },
+    ]
+
+
+def _market_intelligence_payload(connection):
+    active_crop_batches = connection.execute("SELECT * FROM crop_batches WHERE availability_status IN ('AVAILABLE','RESERVED')").fetchall()
+    active_demands = connection.execute('SELECT COUNT(*) AS count FROM demands').fetchone()['count']
+    open_auctions = connection.execute("SELECT COUNT(*) AS count FROM crop_auctions WHERE status IN ('OPEN','OFFER_RECEIVED')").fetchone()['count']
+    completed_orders = connection.execute("SELECT COUNT(*) AS count FROM orders WHERE payment_status='PAID' OR status IN ('COMPLETED','DELIVERED')").fetchone()['count']
+    observed_trade_value = connection.execute("SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE payment_status='PAID'").fetchone()['value']
+    available_supply = sum(float(item['quantity']) for item in active_crop_batches)
+
+    demand_rows = connection.execute('SELECT crop, COUNT(*) AS demand_count, COALESCE(SUM(quantity),0) AS demand_quantity FROM demands GROUP BY crop ORDER BY demand_count DESC, demand_quantity DESC').fetchall()
+    supply_rows = connection.execute("SELECT crop_name AS crop, COALESCE(SUM(quantity),0) AS available_quantity FROM crop_batches WHERE availability_status IN ('AVAILABLE','RESERVED') GROUP BY crop_name ORDER BY available_quantity DESC").fetchall()
+    order_rows = connection.execute("SELECT h.crop, COUNT(*) AS completed_orders FROM orders o JOIN harvests h ON h.id=o.harvest_id WHERE o.payment_status='PAID' OR o.status IN ('COMPLETED','DELIVERED') GROUP BY h.crop ORDER BY completed_orders DESC").fetchall()
+
+    crop_names = sorted({row['crop'] for row in demand_rows} | {row['crop'] for row in supply_rows} | {row['crop'] for row in order_rows})
+    crop_demand = []
+    price_rows = connection.execute("SELECT o.total_amount / NULLIF(o.quantity,0) AS observed_price, h.crop, o.unit FROM orders o JOIN harvests h ON h.id=o.harvest_id WHERE o.payment_status='PAID' AND o.quantity > 0 ORDER BY o.created_at DESC").fetchall()
+
+    for crop in crop_names:
+        demand_row = next((item for item in demand_rows if item['crop'] == crop), None)
+        supply_row = next((item for item in supply_rows if item['crop'] == crop), None)
+        order_row = next((item for item in order_rows if item['crop'] == crop), None)
+        prices = [float(item['observed_price']) for item in price_rows if item['crop'] == crop]
+        crop_demand.append({
+            'crop': crop,
+            'demand_count': int(demand_row['demand_count']) if demand_row else 0,
+            'available_quantity': float(supply_row['available_quantity']) if supply_row else 0.0,
+            'completed_orders': int(order_row['completed_orders']) if order_row else 0,
+            'observed_price_min': round(min(prices), 2) if prices else None,
+            'observed_price_max': round(max(prices), 2) if prices else None,
+            'observed_price_average': round(sum(prices) / len(prices), 2) if prices else None,
+            'observed_price_count': len(prices),
+        })
+
+    observed_prices = [float(item['observed_price']) for item in price_rows]
+    observed_min = min(observed_prices) if observed_prices else None
+    observed_max = max(observed_prices) if observed_prices else None
+    observed_average = sum(observed_prices) / len(observed_prices) if observed_prices else None
+
+    overview = {
+        'active_crop_batches': len(active_crop_batches),
+        'available_supply': round(available_supply, 2),
+        'active_demands': active_demands,
+        'open_auctions': open_auctions,
+        'completed_orders': completed_orders,
+        'observed_trade_value': round(float(observed_trade_value), 2),
+    }
+
+    price_observations = {
+        'minimum_observed_price': round(observed_min, 2) if observed_min is not None else None,
+        'maximum_observed_price': round(observed_max, 2) if observed_max is not None else None,
+        'average_observed_price': round(observed_average, 2) if observed_average is not None else None,
+        'transaction_count': len(observed_prices),
+    }
+
+    if not crop_demand and not observed_prices:
+        insights = [{
+            'title': 'Market intelligence unavailable',
+            'text': 'Insufficient CropCred data for a reliable insight.',
+            'source': 'CropCred records',
+            'type': 'Data-derived insight',
+        }]
+    else:
+        base_insights = _build_rule_based_insights(crop_demand, price_observations)
+        insights = base_insights
+        if OPENROUTER_API_KEY:
+            prompt = (
+                'You are generating CropCred market intelligence from actual records only. ' +
+                'Never invent farmers, prices, demand, supply, or transactions. Base your answer only on this JSON. ' +
+                'Return valid JSON as an array of objects with keys title, text, type, source. ' +
+                'Each text must mention that the evidence comes from CropCred records. ' +
+                'Use exactly the source value "CropCred records" and type value "AI-generated insight". ' +
+                'If there is insufficient data, output one object with text "Insufficient CropCred data for a reliable insight." and type "Data-derived insight". ' +
+                'Do not claim guaranteed prices, forecast, or buying decisions.\n\n' +
+                json.dumps({
+                    'overview': overview,
+                    'crop_demand': sorted(crop_demand, key=lambda item: (-item['demand_count'], -item['available_quantity'], item['crop'])),
+                    'price_observations': price_observations,
+                }, separators=(',', ':'))
+            )
+            try:
+                model_candidates = [OPENROUTER_FREE_MODEL, OPENROUTER_BEST_MODEL]
+                for model_name in model_candidates:
+                    try:
+                        raw = _openrouter_response(model_name, prompt)
+                        insights = _parse_ai_insights(raw)
+                        break
+                    except Exception:
+                        continue
+            except Exception:
+                insights = base_insights
+
+    payload = {
+        'overview': overview,
+        'crop_demand': sorted(crop_demand, key=lambda item: (-item['demand_count'], -item['available_quantity'], item['crop'])),
+        'price_observations': price_observations,
+        'insights': insights,
+        'source': 'CropCred records',
+    }
+
+    connection.execute('DELETE FROM market_insights')
+    for index, insight in enumerate(payload['insights'], start=1):
+        connection.execute(
+            'INSERT INTO market_insights (id, category, title, summary, source, insight_type, data_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (
+                f'MI-{index:04d}',
+                'market_intelligence',
+                insight['title'],
+                insight['text'],
+                insight['source'],
+                insight['type'],
+                json.dumps({
+                    'overview': overview,
+                    'crop_demand': payload['crop_demand'],
+                    'price_observations': price_observations,
+                    'insight_title': insight['title'],
+                }, separators=(',', ':')),
+            ),
+        )
+    connection.commit()
+    return payload
+
 
 def insights_snapshot():
     connection = get_connection()

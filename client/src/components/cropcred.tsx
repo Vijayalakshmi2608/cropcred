@@ -37,6 +37,7 @@ export const navItems = [
   { href: '/crop-batches', label: 'Crop Batches', icon: PackageCheck, group: 'Operate' },
   { href: '/marketplace', label: 'Marketplace', icon: PackageCheck, group: 'Operate' },
   { href: '/b2b', label: 'B2B Demand', icon: ClipboardCheck, group: 'Operate' },
+  { href: '/auctions', label: 'Auctions', icon: Coins, group: 'Operate' },
   { href: '/orders', label: 'Orders', icon: Truck, group: 'Operate' },
   { href: '/passport', label: 'Economic Passport', icon: ShieldCheck, group: 'Trust' },
   { href: '/verify/CR-CRED-00001', label: 'Credentials', icon: FileCheck2, group: 'Trust' },

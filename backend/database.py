@@ -45,6 +45,37 @@ CREATE TABLE IF NOT EXISTS crop_batches (
   fingerprint TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS crop_auctions (
+  id TEXT PRIMARY KEY,
+  buyer_name TEXT NOT NULL,
+  buyer_type TEXT NOT NULL,
+  crop TEXT NOT NULL,
+  crop_batch_id TEXT REFERENCES crop_batches(id),
+  quantity REAL NOT NULL CHECK(quantity > 0),
+  unit TEXT NOT NULL,
+  price_min REAL NOT NULL CHECK(price_min >= 0),
+  price_max REAL NOT NULL CHECK(price_max >= price_min),
+  deadline TEXT NOT NULL,
+  delivery_location TEXT NOT NULL,
+  quality_requirements TEXT,
+  evidence_requirements TEXT,
+  status TEXT NOT NULL CHECK(status IN ('DRAFT','OPEN','OFFER_RECEIVED','CLOSED','AWARDED','CANCELLED')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS auction_offers (
+  id TEXT PRIMARY KEY,
+  auction_id TEXT NOT NULL REFERENCES crop_auctions(id),
+  farmer_id TEXT NOT NULL REFERENCES farmers(id),
+  crop_batch_id TEXT REFERENCES crop_batches(id),
+  quantity REAL NOT NULL CHECK(quantity > 0),
+  offered_price REAL NOT NULL CHECK(offered_price >= 0),
+  delivery_estimate TEXT NOT NULL,
+  message TEXT,
+  status TEXT NOT NULL CHECK(status IN ('SUBMITTED','ACCEPTED','REJECTED','WITHDRAWN')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS marketplace_listings (
   id TEXT PRIMARY KEY,
   harvest_id TEXT NOT NULL REFERENCES harvests(id),
@@ -171,6 +202,16 @@ CREATE TABLE IF NOT EXISTS credential_verification_events (
   verifier_type TEXT NOT NULL, event_type TEXT NOT NULL, timestamp TEXT NOT NULL,
   success INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS market_insights (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL DEFAULT 'market_intelligence',
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'CropCred records',
+  insight_type TEXT NOT NULL DEFAULT 'Data-derived insight',
+  data_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 '''
 
 
@@ -257,6 +298,13 @@ def seed_db():
     connection.executemany('''INSERT INTO marketplace_listings
       (id,harvest_id,farmer_id,crop,quantity_available,unit,price_per_unit,harvest_date,verification_status,location)
       VALUES (?,?,?,?,?,?,?,?,?,?)''', listing_rows)
+    crop_batches_seed = [
+        ('CRP-1041','farmer-01','CR-HRV-00041','Tomatoes','Ponni',500,'kg','2026-09-18',30,38,'AVAILABLE','CERTIFIED','demo-batch-1041'),
+        ('CRP-1042','farmer-02','CR-HRV-00037','Tomatoes','Arka Rakshak',420,'kg','2026-09-05',32,40,'AVAILABLE','CERTIFIED','demo-batch-1042'),
+    ]
+    connection.executemany('''INSERT OR IGNORE INTO crop_batches
+      (id,farmer_id,harvest_id,crop_name,variety,quantity,unit,harvest_date,expected_price_min,expected_price_max,availability_status,quality_status,fingerprint)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', crop_batches_seed)
     demands = [
         ('DEM-1001','Chennai Restaurant Collective','RESTAURANT','Tomatoes',500,'kg',32,38,'Chennai','Weekly','3 days remaining'),
         ('DEM-1002','Southstar Grocers','RETAILER','Bananas',1000,'kg',38,44,'Bengaluru','Weekly','Weekly requirement'),
@@ -264,10 +312,10 @@ def seed_db():
         ('DEM-1004','The Green Table','RESTAURANT','Coconut',300,'units',25,30,'Pondicherry','Weekly','5 days remaining'),
         ('DEM-1005','Daily Basket','RETAILER','Onions',750,'kg',24,28,'Chennai','Weekly','12 days remaining'),
     ]
-    connection.executemany('''INSERT INTO demands
+    connection.executemany('''INSERT OR IGNORE INTO demands
       (id,buyer_name,buyer_type,crop,quantity,unit,price_min,price_max,location,frequency,deadline)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)''', demands)
-    connection.executemany('INSERT INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', [
+    connection.executemany('INSERT OR IGNORE INTO buyer_profiles (id,business_name,buyer_type,verification_status) VALUES (?,?,?,?)', [
         ('buyer-1001', 'Chennai Restaurant Collective', 'RESTAURANT', 'VERIFIED'),
         ('buyer-1002', 'Southstar Grocers', 'RETAILER', 'VERIFIED'),
         ('buyer-1003', 'Harvest Kitchen Co.', 'PROCESSOR', 'VERIFIED'),
@@ -282,10 +330,10 @@ def seed_db():
         ('CR-ORD-00213','CR-HRV-00036','farmer-02','Daily Basket','RETAILER',80,'kg',4640,'COMPLETED','PAID'),
         ('CR-ORD-00208','CR-HRV-00041','farmer-01','Chennai Restaurant','RESTAURANT',25,'kg',875,'COMPLETED','PAID'),
     ]
-    connection.executemany('''INSERT INTO orders
+    connection.executemany('''INSERT OR IGNORE INTO orders
       (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status)
       VALUES (?,?,?,?,?,?,?,?,?,?)''', orders)
-    connection.executemany('INSERT INTO deliveries (id,order_id,status,confirmed_at) VALUES (?,?,?,?)', [
+    connection.executemany('INSERT OR IGNORE INTO deliveries (id,order_id,status,confirmed_at) VALUES (?,?,?,?)', [
         ('delivery-01','CR-ORD-00231','DELIVERED','2026-09-21T14:32:00'),
         ('delivery-02','CR-ORD-00229','DELIVERED','2026-09-20T12:00:00'),
         ('delivery-03','CR-ORD-00224','PENDING',None),
@@ -293,6 +341,6 @@ def seed_db():
         ('delivery-05','CR-ORD-00213','DELIVERED','2026-09-12T11:00:00'),
         ('delivery-06','CR-ORD-00208','DELIVERED','2026-09-09T16:00:00'),
     ])
-    connection.execute("INSERT INTO economic_credentials (id,farmer_id,credential_id,credential_hash) VALUES (?,?,?,?)", ('credential-01','farmer-01','CR-CRED-00001','local-demo-credential'))
+    connection.execute("INSERT OR IGNORE INTO economic_credentials (id,farmer_id,credential_id,credential_hash) VALUES (?,?,?,?)", ('credential-01','farmer-01','CR-CRED-00001','local-demo-credential'))
     connection.commit()
     connection.close()

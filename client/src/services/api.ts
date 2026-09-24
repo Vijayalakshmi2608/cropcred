@@ -33,6 +33,12 @@ export async function createDemand(data: any) { return request<any>('/demands', 
 export async function getDemandResponses(demandId: string) { return request<any[]>(`/demands/${demandId}/responses`); }
 export async function respondToDemand(demandId: string, data: any) { return request<any>(`/demands/${demandId}/respond`, { method: 'POST', body: JSON.stringify(data) }); }
 export async function acceptDemandResponse(demandId: string, responseId: string) { return request<any>(`/demands/${demandId}/accept/${responseId}`, { method: 'POST' }); }
+export async function getAuctions() { return request<any[]>(`/auctions`); }
+export async function createAuction(data: any) { return request<any>('/auctions', { method: 'POST', body: JSON.stringify(data) }); }
+export async function getAuction(id: string) { return request<any>(`/auctions/${id}`); }
+export async function getAuctionOffers(id: string) { return request<any[]>(`/auctions/${id}/offers`); }
+export async function submitAuctionOffer(auctionId: string, data: any) { return request<any>(`/auctions/${auctionId}/offers`, { method: 'POST', body: JSON.stringify(data) }); }
+export async function awardAuctionOffer(auctionId: string, offerId: string) { return request<any>(`/auctions/${auctionId}/award`, { method: 'POST', body: JSON.stringify({ offer_id: offerId }) }); }
 export async function getBuyerProfile(buyerId = 'buyer-1001') { return request<any>(`/buyers/${buyerId}/profile`); }
 export async function getFarmerOpportunities(farmerId = 'farmer-01') { return request<any[]>(`/farmers/${farmerId}/opportunities`); }
 export async function getInsightsOverview() { return request<any>('/insights/overview'); }
@@ -40,6 +46,7 @@ export async function getProductFunnel() { return request<any[]>('/insights/prod
 export async function getCommerceInsights() { return request<any>('/insights/commerce'); }
 export async function getB2BInsights() { return request<any>('/insights/b2b'); }
 export async function getCredentialInsights() { return request<any>('/insights/credentials'); }
+export async function getMarketIntelligence() { return request<any>('/market-intelligence'); }
 export async function getValidationInterviews() { return request<any[]>('/validation/interviews'); }
 export async function createValidationInterview(data: any) { return request<any>('/validation/interviews', { method: 'POST', body: JSON.stringify(data) }); }
 export async function getProductLearnings() { return request<any[]>('/product-learnings'); }
