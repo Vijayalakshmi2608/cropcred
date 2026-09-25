@@ -132,6 +132,116 @@ def mark_payment_failed(connection, payment_id):
     connection.commit()
 
 
+def crop_batch_credential_payload(item):
+    if not item: return None
+    item = dict(item)
+    try:
+        item['metadata'] = json.loads(item.get('metadata_json') or '{}') if item.get('metadata_json') else {}
+    except (TypeError, ValueError):
+        item['metadata'] = {'raw': item.get('metadata_json')}
+    item['status_label'] = item.get('status', 'PENDING').replace('_', ' ').title()
+    item['timestamp'] = item.get('verified_at') or item.get('created_at')
+    item['network_label'] = (item.get('network') or 'devnet').upper()
+    item['transaction_url'] = explorer_url(item['transaction_signature']) if item.get('transaction_signature') else None
+    return item
+
+
+def build_crop_batch_credential(batch):
+    evidence = {
+        'batch_id': batch['id'],
+        'crop_id': batch['harvest_id'],
+        'farmer_id': batch['farmer_id'],
+        'crop_type': batch['crop_name'],
+        'quantity': float(batch['quantity']),
+        'unit': batch['unit'],
+        'harvest_date': batch['harvest_date'],
+        'farm_reference': batch['farmer_id'],
+        'evidence_fingerprint': batch['fingerprint'],
+    }
+    metadata = {
+        'network': 'devnet',
+        'crop_type': batch['crop_name'],
+        'quantity': float(batch['quantity']),
+        'unit': batch['unit'],
+        'farmer_reference': batch['farmer_id'],
+        'harvest_id': batch['harvest_id'],
+        'harvest_date': batch['harvest_date'],
+        'farmer_identity_reference': batch['farmer_id'],
+        'status': 'PENDING',
+        'verification': 'Awaiting Solana Devnet confirmation',
+    }
+    evidence_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    metadata_hash = hashlib.sha256(json.dumps(metadata, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    ref_seed = f"{batch['id']}:{batch['farmer_id']}:{batch['crop_name']}"
+    credential_reference = f"CR-DC-{batch['id']}-{hashlib.sha256(ref_seed.encode()).hexdigest()[:10].upper()}"
+    return credential_reference, evidence_hash, metadata_hash, metadata
+
+
+def ensure_crop_batch_credential(connection, batch_id, wallet_address=None, transaction_signature=None, network='devnet', status=None):
+    batch = connection.execute('''SELECT b.*, f.wallet_address AS farmer_wallet, h.status AS harvest_status, h.location AS harvest_location FROM crop_batches b JOIN farmers f ON f.id=b.farmer_id JOIN harvests h ON h.id=b.harvest_id WHERE b.id=?''', (batch_id,)).fetchone()
+    if not batch:
+        return None
+    credential_reference, evidence_hash, metadata_hash, metadata = build_crop_batch_credential(batch)
+    if status is None:
+        status = 'VERIFIED' if batch['harvest_status'] == 'VERIFIED' else 'PENDING'
+    if transaction_signature:
+        status = 'VERIFIED'
+    network = (network or 'devnet').lower()
+    existing = connection.execute('SELECT * FROM crop_batch_credentials WHERE batch_id=?', (batch_id,)).fetchone()
+    now = datetime.now().isoformat(timespec='seconds')
+    if existing:
+        connection.execute('''UPDATE crop_batch_credentials SET crop_id=?, farmer_identity_ref=?, crop_type=?, quantity=?, unit=?, harvest_id=?, harvest_date=?, harvest_location=?, evidence_hash=?, metadata_hash=?, status=?, network=?, wallet_address=?, transaction_signature=?, metadata_json=?, updated_at=? WHERE batch_id=?''', (
+            batch['harvest_id'],
+            batch['farmer_id'],
+            batch['crop_name'],
+            float(batch['quantity']),
+            batch['unit'],
+            batch['harvest_id'],
+            batch['harvest_date'],
+            batch['harvest_location'],
+            evidence_hash,
+            metadata_hash,
+            status,
+            network,
+            wallet_address or existing['wallet_address'] or batch['farmer_wallet'],
+            transaction_signature or existing['transaction_signature'],
+            json.dumps(metadata, sort_keys=True),
+            now,
+            batch_id,
+        ))
+        if transaction_signature and not existing['verified_at']:
+            connection.execute('UPDATE crop_batch_credentials SET verified_at=? WHERE batch_id=?', (now, batch_id))
+        if not transaction_signature and status == 'VERIFIED':
+            connection.execute('UPDATE crop_batch_credentials SET verified_at=? WHERE batch_id=?', (now, batch_id))
+    else:
+        connection.execute('''INSERT INTO crop_batch_credentials (id,batch_id,crop_id,farmer_id,farmer_identity_ref,crop_type,quantity,unit,harvest_id,harvest_date,harvest_location,evidence_hash,metadata_hash,status,network,wallet_address,transaction_signature,verified_at,metadata_json,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+            credential_reference,
+            batch_id,
+            batch['harvest_id'],
+            batch['farmer_id'],
+            batch['farmer_id'],
+            batch['crop_name'],
+            float(batch['quantity']),
+            batch['unit'],
+            batch['harvest_id'],
+            batch['harvest_date'],
+            batch['harvest_location'],
+            evidence_hash,
+            metadata_hash,
+            status,
+            network,
+            wallet_address or batch['farmer_wallet'],
+            transaction_signature,
+            now if transaction_signature else None,
+            json.dumps(metadata, sort_keys=True),
+            now,
+            now,
+        ))
+    item = connection.execute('SELECT * FROM crop_batch_credentials WHERE batch_id=?', (batch_id,)).fetchone()
+    return crop_batch_credential_payload(item)
+
+
 def credential_snapshot(connection, farmer_id):
     farmer = connection.execute('SELECT * FROM farmers WHERE id=?', (farmer_id,)).fetchone()
     if not farmer: return None
@@ -245,6 +355,43 @@ def get_crop_batch(batch_id):
     return ok(items[0]) if items else fail('Crop batch not found', 404)
 
 
+@app.get('/api/crop-batches/<batch_id>/credential')
+def get_crop_batch_credential(batch_id):
+    connection = get_connection()
+    credential = connection.execute('SELECT * FROM crop_batch_credentials WHERE batch_id=?', (batch_id,)).fetchone()
+    if not credential:
+        if not connection.execute('SELECT id FROM crop_batches WHERE id=?', (batch_id,)).fetchone():
+            connection.close(); return fail('Crop batch not found', 404)
+        credential = ensure_crop_batch_credential(connection, batch_id)
+    connection.close()
+    return ok(crop_batch_credential_payload(credential)) if credential else fail('Crop batch credential is not available yet.', 404)
+
+
+@app.post('/api/crop-batches/<batch_id>/credential')
+def upsert_crop_batch_credential(batch_id):
+    data = request.get_json(silent=True) or {}
+    connection = get_connection()
+    if not connection.execute('SELECT id FROM crop_batches WHERE id=?', (batch_id,)).fetchone():
+        connection.close(); return fail('Crop batch not found', 404)
+    wallet_address = str(data.get('wallet_address') or '').strip() or None
+    transaction_signature = str(data.get('transaction_signature') or '').strip() or None
+    network = str(data.get('network') or 'devnet').strip().lower()
+    if network != 'devnet':
+        connection.close(); return fail('CropCred only supports Solana Devnet.', 400)
+    if transaction_signature and wallet_address and valid_solana_address(wallet_address):
+        try:
+            tx = rpc_call('getTransaction', [transaction_signature, {'encoding': 'jsonParsed', 'commitment': 'confirmed', 'maxSupportedTransactionVersion': 0}])
+            if not tx or tx.get('meta', {}).get('err') is not None:
+                raise ValueError()
+            status = 'VERIFIED'
+        except Exception:
+            status = 'UNVERIFIED'
+    else:
+        status = 'PENDING'
+    credential = ensure_crop_batch_credential(connection, batch_id, wallet_address=wallet_address, transaction_signature=transaction_signature, network=network, status=status)
+    connection.commit(); connection.close(); return ok(credential)
+
+
 @app.post('/api/crop-batches')
 def create_crop_batch():
     data = request.get_json(silent=True) or {}
@@ -272,9 +419,10 @@ def create_crop_batch():
     try:
         connection.execute('''INSERT INTO crop_batches (id,farmer_id,harvest_id,crop_name,variety,quantity,unit,harvest_date,expected_price_min,expected_price_max,availability_status,quality_status,fingerprint)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (batch_id, harvest['farmer_id'], harvest_id, harvest['crop'], variety, quantity, canonical['unit'], harvest['harvest_date'], price_min, price_max, availability, quality, fingerprint))
+        ensure_crop_batch_credential(connection, batch_id, wallet_address=harvest.get('wallet_address') or None)
         credential_snapshot(connection, harvest['farmer_id'])
         item = crop_batch_query(connection, 'b.id=?', (batch_id,))[0]
-        connection.close(); return ok(item, 201)
+        connection.commit(); connection.close(); return ok(item, 201)
     except Exception:
         connection.rollback(); connection.close(); return fail('Could not create the crop batch.', 400)
 
@@ -593,6 +741,7 @@ def verify_payment(order_id):
         connection.rollback(); connection.close(); return fail('This transaction signature has already been consumed.', 409)
     connection.execute("UPDATE orders SET status='PAID', payment_status='PAID', transaction_signature=? WHERE id=?", (signature, order_id))
     connection.execute('UPDATE economic_credentials SET evidence_count=evidence_count+1, verified_transaction_count=verified_transaction_count+1, updated_at=? WHERE farmer_id=?', (now, order['farmer_id']))
+    connection.execute("UPDATE crop_batch_credentials SET status='VERIFIED', network='devnet', wallet_address=?, transaction_signature=?, verified_at=?, updated_at=? WHERE harvest_id=?", (payment['recipient_wallet'], signature, now, now, order['harvest_id']))
     connection.commit(); result = dict(connection.execute('SELECT * FROM payments WHERE id=?', (payment['id'],)).fetchone()); connection.close()
     result['state'] = 'VERIFIED'; result['explorer_url'] = explorer_url(signature)
     return ok(result)
@@ -615,15 +764,15 @@ def get_payment(order_id):
 
 @app.get('/api/farmers/<farmer_id>/economic-credential')
 def get_economic_credential(farmer_id):
-    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); item = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); connection.close()
-    return ok({**dict(item), **snapshot}) if item and snapshot else fail('Economic credential not found', 404)
+    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); item = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); digital_credentials = [crop_batch_credential_payload(dict(row)) for row in connection.execute('SELECT * FROM crop_batch_credentials WHERE farmer_id=? ORDER BY created_at DESC', (farmer_id,)).fetchall()]; connection.close()
+    return ok({**dict(item), **snapshot, 'digital_credentials': digital_credentials}) if item and snapshot else fail('Economic credential not found', 404)
 
 @app.get('/api/credentials/<credential_id>')
 def get_credential(credential_id):
     connection = get_connection(); item = connection.execute('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,)).fetchone()
     if not item: connection.close(); return fail('Credential not found', 404)
-    snapshot = credential_snapshot(connection, item['farmer_id']); item = connection.execute('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,)).fetchone(); connection.close()
-    return ok({**dict(item), 'verified_harvests': snapshot['verified_harvests'], 'completed_sales': snapshot['completed_sales'], 'verified_payments': snapshot['verified_payments'], 'verified_deliveries': snapshot['verified_deliveries'], 'verified_trade_value': snapshot['verified_trade_value']})
+    snapshot = credential_snapshot(connection, item['farmer_id']); item = connection.execute('SELECT * FROM economic_credentials WHERE credential_id=?', (credential_id,)).fetchone(); digital_credentials = [crop_batch_credential_payload(dict(row)) for row in connection.execute('SELECT * FROM crop_batch_credentials WHERE farmer_id=? ORDER BY created_at DESC', (item['farmer_id'],)).fetchall()]; connection.close()
+    return ok({**dict(item), 'verified_harvests': snapshot['verified_harvests'], 'completed_sales': snapshot['completed_sales'], 'verified_payments': snapshot['verified_payments'], 'verified_deliveries': snapshot['verified_deliveries'], 'verified_trade_value': snapshot['verified_trade_value'], 'digital_credentials': digital_credentials})
 
 @app.get('/api/farmers/<farmer_id>/passport/activity')
 def get_passport_activity(farmer_id):
@@ -643,9 +792,9 @@ def share_credential(credential_id):
 
 @app.get('/api/farmers/<farmer_id>/passport')
 def get_passport(farmer_id):
-    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); evidence = credential_evidence(connection, farmer_id); credential = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); connection.close()
+    connection = get_connection(); snapshot = credential_snapshot(connection, farmer_id); evidence = credential_evidence(connection, farmer_id); credential = connection.execute('SELECT * FROM economic_credentials WHERE farmer_id=?', (farmer_id,)).fetchone(); digital_credentials = [crop_batch_credential_payload(dict(row)) for row in connection.execute('SELECT * FROM crop_batch_credentials WHERE farmer_id=? ORDER BY created_at DESC', (farmer_id,)).fetchall()]; connection.close()
     if not snapshot: return fail('Farmer not found', 404)
-    return ok({**snapshot, 'credential': dict(credential) if credential else None, 'activity': evidence})
+    return ok({**snapshot, 'credential': dict(credential) if credential else None, 'activity': evidence, 'digital_credentials': digital_credentials})
 
 @app.get('/api/market-intelligence')
 def get_market_intelligence():
