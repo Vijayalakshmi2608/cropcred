@@ -8,12 +8,12 @@ import { AuctionDetailPage, AuctionNetwork } from './pages/Auctions';
 import Insights from './pages/Insights';
 import Landing from './pages/Landing';
 import { CropBatches, CropBatchDetail, NewCropBatch } from './pages/CropBatches';
-import { listings, type Harvest, type Listing, type Order, orders as seedOrders, harvests as seedHarvests } from './data/mockData';
+import { listings, type Harvest, type Listing, type Order } from './data/mockData';
 import { createHarvest, createOrder, getHarvests, getOrders, CROP_CRED_API_BASE } from './services/api';
 
 export default function App() {
-  const [harvests, setHarvests] = useState<Harvest[]>(seedHarvests);
-  const [orders, setOrders] = useState<Order[]>(seedOrders);
+  const [harvests, setHarvests] = useState<Harvest[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
 

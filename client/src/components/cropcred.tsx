@@ -71,9 +71,15 @@ export function Topbar({ title, subtitle, onMenu }: { title: string; subtitle?: 
   return <header className="topbar"><div className="topbar-heading"><button className="mobile-menu" onClick={onMenu} aria-label="Open menu"><Menu size={20} /></button><div><div className="topbar-kicker">CropCred workspace</div><h1>{title}</h1>{subtitle && <span>{subtitle}</span>}</div></div><div className="topbar-actions"><label className="top-search"><Search size={16} /><input placeholder="Search activity" aria-label="Search activity" /></label><button className="icon-button has-dot" aria-label="Notifications"><Bell size={18} /></button>{connected ? <div className="wallet-chip connected-chip"><span className="wallet-status" /> <span><strong><WalletAddress address={publicKey} /></strong><small><NetworkBadge wrong={network === 'wrong-network'} /></small></span><ChevronDown size={14} /></div> : <SolanaWalletButton compact />}<div className="avatar">AK</div></div></header>;
 }
 
+export function MobileBottomNav() {
+  const [location] = useLocation();
+  const items = navItems.filter((item) => ['/dashboard', '/harvests', '/crop-batches', '/orders', '/profile'].includes(item.href));
+  return <nav className="mobile-bottom-nav" aria-label="Primary mobile navigation">{items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`mobile-bottom-item ${location === href || (href !== '/dashboard' && location.startsWith(href)) ? 'active' : ''}`} aria-current={location === href ? 'page' : undefined}><Icon size={18} strokeWidth={1.8} /><span>{label === 'Crop Batches' ? 'Batches' : label}</span></Link>)}</nav>;
+}
+
 export function AppShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle?: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  return <div className="app-shell"><Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />{menuOpen && <button className="scrim" onClick={() => setMenuOpen(false)} aria-label="Close menu" />}<main className="main-shell"><Topbar title={title} subtitle={subtitle} onMenu={() => setMenuOpen(true)} /><div className="page-content">{children}</div></main></div>;
+  return <div className="app-shell"><Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />{menuOpen && <button className="scrim" onClick={() => setMenuOpen(false)} aria-label="Close menu" />}<main className="main-shell"><Topbar title={title} subtitle={subtitle} onMenu={() => setMenuOpen(true)} /><div className="page-content">{children}</div></main><MobileBottomNav /></div>;
 }
 
 export function Toast({ message, onClose }: { message: string; onClose: () => void }) {
