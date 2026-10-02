@@ -163,3 +163,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .api-connection-banner { bottom:82px; }
 }
 @media (prefers-reduced-motion: reduce) { .mobile-bottom-item { transition:none; } }
+
+/* Native fallback state: transparent demo mode when no HTTPS API is reachable */
+.api-dot.demo { background: var(--copper, #bd7650); }
+.offline-demo-banner { border-color: rgba(189,118,80,.32); background: rgba(255,248,242,.96); }
+.offline-demo-banner strong { color: #8b5439; }

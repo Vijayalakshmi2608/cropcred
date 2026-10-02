@@ -9,19 +9,22 @@ import Insights from './pages/Insights';
 import Landing from './pages/Landing';
 import { CropBatches, CropBatchDetail, NewCropBatch } from './pages/CropBatches';
 import { listings, type Harvest, type Listing, type Order } from './data/mockData';
+import { harvests as demoHarvests, orders as demoOrders } from './data/mockData';
 import { createHarvest, createOrder, getHarvests, getOrders, CROP_CRED_API_BASE } from './services/api';
+import { Capacitor } from '@capacitor/core';
 
 export default function App() {
   const [harvests, setHarvests] = useState<Harvest[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [offlineDemo, setOfflineDemo] = useState(false);
 
   useEffect(() => {
     let active = true;
     Promise.all([getHarvests(), getOrders()]).then(([nextHarvests, nextOrders]) => {
       if (active) { setHarvests(nextHarvests); setOrders(nextOrders); setLoading(false); }
-    }).catch((error) => { if (active) { setApiError(error instanceof Error ? error.message : 'CropCred API could not be reached.'); setLoading(false); } });
+    }).catch((error) => { if (active) { if (Capacitor.isNativePlatform()) { setHarvests(demoHarvests); setOrders(demoOrders); setOfflineDemo(true); } else { setApiError(error instanceof Error ? error.message : 'CropCred API could not be reached.'); } setLoading(false); } });
     return () => { active = false; };
   }, []);
 
@@ -34,5 +37,5 @@ export default function App() {
     catch (error) { setApiError(error instanceof Error ? error.message : 'Order could not be created.'); }
   };
   const props = { harvests, setHarvests, orders, setOrders };
-  return <><div className="api-connection-banner" role="status"><span className={`api-dot ${apiError ? 'error' : 'ok'}`} />{apiError ? <><strong>Live API unavailable.</strong><span>{apiError} Configure <code>VITE_API_BASE_URL</code> for this deployment.</span></> : <><strong>Live data connection</strong><span>{CROP_CRED_API_BASE}</span></>}</div><Switch><Route path="/"><Landing /></Route><Route path="/dashboard"><Dashboard {...props} /></Route><Route path="/harvests/new"><NewHarvest onRegistered={addHarvest} /></Route><Route path="/harvests/:id"><HarvestDetail {...props} /></Route><Route path="/harvests"><Harvests {...props} /></Route><Route path="/crop-batches/new"><NewCropBatch harvests={harvests} /></Route><Route path="/crop-batches/:id"><CropBatchDetail /></Route><Route path="/crop-batches"><CropBatches /></Route><Route path="/marketplace/:id"><MarketplaceDetail onPreorder={addOrder} /></Route><Route path="/marketplace"><Marketplace onPreorder={addOrder} /></Route><Route path="/b2b"><DemandNetwork /></Route><Route path="/auctions/:id"><AuctionDetailPage /></Route><Route path="/auctions"><AuctionNetwork /></Route><Route path="/orders"><Orders {...props} /></Route><Route path="/passport"><PassportIntelligence /></Route><Route path="/insights"><Insights /></Route><Route path="/profile"><Profile orders={orders} /></Route><Route path="/verify/:credentialId"><PublicCredential /></Route><Route><NotFound /></Route></Switch></>;
+  return <><div className={`api-connection-banner ${offlineDemo ? 'offline-demo-banner' : ''}`} role="status"><span className={`api-dot ${apiError ? 'error' : offlineDemo ? 'demo' : 'ok'}`} />{apiError ? <><strong>Live API unavailable.</strong><span>{apiError} Configure <code>VITE_API_BASE_URL</code> for this deployment.</span></> : offlineDemo ? <><strong>Offline demo workspace</strong><span>Showing local demo records. Connect a live HTTPS API to sync real farmer data.</span></> : <><strong>Live data connection</strong><span>{CROP_CRED_API_BASE}</span></>}</div><Switch><Route path="/"><Landing /></Route><Route path="/dashboard"><Dashboard {...props} /></Route><Route path="/harvests/new"><NewHarvest onRegistered={addHarvest} /></Route><Route path="/harvests/:id"><HarvestDetail {...props} /></Route><Route path="/harvests"><Harvests {...props} /></Route><Route path="/crop-batches/new"><NewCropBatch harvests={harvests} /></Route><Route path="/crop-batches/:id"><CropBatchDetail /></Route><Route path="/crop-batches"><CropBatches /></Route><Route path="/marketplace/:id"><MarketplaceDetail onPreorder={addOrder} /></Route><Route path="/marketplace"><Marketplace onPreorder={addOrder} /></Route><Route path="/b2b"><DemandNetwork /></Route><Route path="/auctions/:id"><AuctionDetailPage /></Route><Route path="/auctions"><AuctionNetwork /></Route><Route path="/orders"><Orders {...props} /></Route><Route path="/passport"><PassportIntelligence /></Route><Route path="/insights"><Insights /></Route><Route path="/profile"><Profile orders={orders} /></Route><Route path="/verify/:credentialId"><PublicCredential /></Route><Route><NotFound /></Route></Switch></>;
 }
