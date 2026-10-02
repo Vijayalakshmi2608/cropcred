@@ -10,8 +10,16 @@ export const CROP_CRED_API_CONFIGURED = Boolean(configuredApiBase || PUBLIC_API_
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);
   if (options?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  const body = await response.json();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  } catch {
+    throw new Error('CropCred API could not be reached. Check the HTTPS API URL and network connection.');
+  }
+  const raw = await response.text();
+  let body: any;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(`CropCred API returned a non-JSON response (${response.status}). Configure the backend API URL.`); }
   if (!response.ok || body.success === false) throw new Error(typeof body.error === 'string' ? body.error : body.error?.message || 'Request failed');
   return body.data ?? body;
 }

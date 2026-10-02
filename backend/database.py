@@ -294,6 +294,48 @@ def init_db():
     if payment_existing and payment_existing['sql'] and 'orders_legacy' in payment_existing['sql']:
         connection.execute('ALTER TABLE payments RENAME TO payments_legacy')
     connection.executescript(SCHEMA)
+    auction_columns = {row['name'] for row in connection.execute('PRAGMA table_info(crop_auctions)').fetchall()}
+    offer_columns = {row['name'] for row in connection.execute('PRAGMA table_info(auction_offers)').fetchall()}
+    if auction_columns and ('quantity' not in auction_columns or 'quality_requirements' not in auction_columns or 'evidence_requirements' not in auction_columns) or offer_columns and 'quantity' not in offer_columns:
+        connection.execute('ALTER TABLE auction_offers RENAME TO auction_offers_legacy')
+        connection.execute('ALTER TABLE crop_auctions RENAME TO crop_auctions_legacy')
+        connection.execute('''CREATE TABLE crop_auctions (
+          id TEXT PRIMARY KEY,
+          buyer_name TEXT NOT NULL,
+          buyer_type TEXT NOT NULL,
+          crop TEXT NOT NULL,
+          crop_batch_id TEXT REFERENCES crop_batches(id) ON DELETE CASCADE,
+          quantity REAL NOT NULL CHECK(quantity > 0),
+          unit TEXT NOT NULL,
+          price_min REAL NOT NULL CHECK(price_min >= 0),
+          price_max REAL NOT NULL CHECK(price_max >= price_min),
+          deadline TEXT NOT NULL,
+          delivery_location TEXT NOT NULL,
+          quality_requirements TEXT,
+          evidence_requirements TEXT,
+          status TEXT NOT NULL CHECK(status IN ('DRAFT','OPEN','OFFER_RECEIVED','CLOSED','AWARDED','CANCELLED')),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )''')
+        connection.execute('''CREATE TABLE auction_offers (
+          id TEXT PRIMARY KEY,
+          auction_id TEXT NOT NULL REFERENCES crop_auctions(id) ON DELETE CASCADE,
+          farmer_id TEXT NOT NULL REFERENCES farmers(id) ON DELETE CASCADE,
+          crop_batch_id TEXT REFERENCES crop_batches(id) ON DELETE CASCADE,
+          quantity REAL NOT NULL CHECK(quantity > 0),
+          offered_price REAL NOT NULL CHECK(offered_price >= 0),
+          delivery_estimate TEXT NOT NULL,
+          message TEXT,
+          status TEXT NOT NULL CHECK(status IN ('SUBMITTED','ACCEPTED','REJECTED','WITHDRAWN')),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )''')
+        connection.execute('''INSERT INTO crop_auctions (id,buyer_name,buyer_type,crop,crop_batch_id,quantity,unit,price_min,price_max,deadline,delivery_location,quality_requirements,evidence_requirements,status,created_at,updated_at)
+          SELECT id,buyer_name,buyer_type,crop,crop_batch_id,quantity_required,unit,price_min,price_max,deadline,delivery_location,requirements,'',status,created_at,updated_at FROM crop_auctions_legacy''')
+        connection.execute('''INSERT INTO auction_offers (id,auction_id,farmer_id,crop_batch_id,quantity,offered_price,delivery_estimate,message,status,created_at,updated_at)
+          SELECT id,auction_id,farmer_id,crop_batch_id,quantity_offered,offered_price,delivery_estimate,message,status,created_at,updated_at FROM auction_offers_legacy''')
+        connection.execute('DROP TABLE auction_offers_legacy')
+        connection.execute('DROP TABLE crop_auctions_legacy')
     if connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='payments_legacy'").fetchone():
         connection.execute('INSERT OR IGNORE INTO payments SELECT * FROM payments_legacy')
         connection.execute('DROP TABLE payments_legacy')

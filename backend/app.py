@@ -649,9 +649,11 @@ def create_order():
     order_count = connection.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
     order_id = f"CR-ORD-{order_count + 232:05d}"
     total = quantity * listing['price_per_unit']
+    reserved = connection.execute('UPDATE marketplace_listings SET quantity_available=quantity_available-? WHERE id=? AND quantity_available>=?', (quantity, data['listing_id'], quantity))
+    if reserved.rowcount != 1:
+        connection.rollback(); connection.close(); return fail('Requested quantity is no longer available.', 409)
     connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature)
       VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, listing['harvest_id'], listing['farmer_id'], data['buyer_name'], data.get('buyer_type', 'RETAILER'), quantity, listing['unit'], total))
-    connection.execute('UPDATE marketplace_listings SET quantity_available=quantity_available-? WHERE id=?', (quantity, data['listing_id']))
     connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING'))
     connection.commit()
     created = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()); connection.close()
