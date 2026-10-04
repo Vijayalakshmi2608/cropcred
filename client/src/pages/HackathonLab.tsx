@@ -1,39 +1,64 @@
-import { useMemo, useState } from 'react';
-import { ArrowUpRight, Bot, Check, CircleAlert, LockKeyhole, ShieldCheck, Sparkles, WalletCards } from 'lucide-react';
-import { AppShell, PageFrame, SectionHeading } from '../components/cropcred';
+import { useEffect, useState } from 'react';
+import { ArrowUpRight, Bot, Check, CircleAlert, Clipboard, Copy, LockKeyhole, ShieldCheck, Sparkles, WalletCards } from 'lucide-react';
+import { AppShell, PageFrame } from '../components/cropcred';
+import { getPassport } from '../services/api';
 
 export type Harvest = { crop: string; quantity: number; unit: string; date: string };
 export type Order = { crop: string; amount: string; status: string };
-export type ZKProof = { id: string; threshold: number; commitment: string; status: 'DEMO_ONLY' };
 export type AIAgentIntent = { action: string; crop: string; percentage: number; trigger: string; execution: 'USER_APPROVAL_REQUIRED' };
+type PassportSnapshot = { verified_harvests: number; completed_sales: number; verified_payments: number; verified_deliveries: number; verified_trade_value: number; total_orders: number; credential?: { fingerprint?: string | null }; activity?: unknown[] };
+type ProofRule = { id: string; label: string; metric: keyof PassportSnapshot; threshold: number; format: (value: number) => string };
+type Proof = { id: string; commitment: string; condition: string; ruleId: string; threshold: number; eligible: boolean; generatedAt: string; recordCount: number; sourceFingerprint: string };
 
-const demoHarvests: Harvest[] = [
-  { crop: 'Tomatoes', quantity: 420, unit: 'kg', date: '05 Sep 2026' },
-  { crop: 'Rice', quantity: 500, unit: 'kg', date: '18 Sep 2026' },
-];
-const demoOrders: Order[] = [
-  { crop: 'Tomatoes', amount: '₹14,700', status: 'Payment verified' },
-  { crop: 'Rice', amount: '₹18,200', status: 'Delivery confirmed' },
+const proofRules: ProofRule[] = [
+  { id: 'sales-100000', label: 'Verified sales greater than ₹1,00,000', metric: 'verified_trade_value', threshold: 100000, format: (value) => `₹${value.toLocaleString('en-IN')}` },
+  { id: 'sales-250000', label: 'Verified sales greater than ₹2,50,000', metric: 'verified_trade_value', threshold: 250000, format: (value) => `₹${value.toLocaleString('en-IN')}` },
+  { id: 'sales-500000', label: 'Verified sales greater than ₹5,00,000', metric: 'verified_trade_value', threshold: 500000, format: (value) => `₹${value.toLocaleString('en-IN')}` },
+  { id: 'orders-3', label: 'At least 3 completed orders', metric: 'completed_sales', threshold: 3, format: (value) => `${value} completed orders` },
+  { id: 'deliveries-3', label: 'At least 3 successful deliveries', metric: 'verified_deliveries', threshold: 3, format: (value) => `${value} successful deliveries` },
 ];
 
-async function digest(value: string) {
+async function sha256(value: string) {
   const bytes = new TextEncoder().encode(value);
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function ZKCreditDashboard({ harvests, orders }: { harvests: Harvest[]; orders: Order[] }) {
-  const [threshold, setThreshold] = useState(5000);
-  const [proof, setProof] = useState<ZKProof | null>(null);
+function metricValue(snapshot: PassportSnapshot, rule: ProofRule) { return Number(snapshot[rule.metric] || 0); }
+function recordCount(snapshot: PassportSnapshot) { return Number(snapshot.verified_harvests || 0) + Number(snapshot.completed_sales || 0) + Number(snapshot.verified_payments || 0) + Number(snapshot.verified_deliveries || 0); }
+
+export function ZKCreditDashboard() {
+  const [snapshot, setSnapshot] = useState<PassportSnapshot | null>(null);
+  const [selectedRule, setSelectedRule] = useState(proofRules[0].id);
+  const [proof, setProof] = useState<Proof | null>(null);
+  const [verifyState, setVerifyState] = useState<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
   const [busy, setBusy] = useState(false);
-  const total = orders.reduce((sum, order) => sum + Number(order.amount.replace(/[^0-9.]/g, '')), 0);
+  const [error, setError] = useState('');
+  const rule = proofRules.find((item) => item.id === selectedRule) || proofRules[0];
+
+  useEffect(() => { getPassport().then(setSnapshot).catch((reason) => setError(reason instanceof Error ? reason.message : 'Economic Passport data could not be loaded.')); }, []);
+
   const generate = async () => {
-    setBusy(true);
-    const commitment = await digest(JSON.stringify({ threshold, total, harvestCount: harvests.length }));
-    setProof({ id: `ZK-DEMO-${commitment.slice(0, 10).toUpperCase()}`, threshold, commitment, status: 'DEMO_ONLY' });
+    if (!snapshot) return;
+    setBusy(true); setVerifyState('idle');
+    const sourceFingerprint = snapshot.credential?.fingerprint || await sha256(JSON.stringify({ verified_harvests: snapshot.verified_harvests, completed_sales: snapshot.completed_sales, verified_payments: snapshot.verified_payments, verified_deliveries: snapshot.verified_deliveries, verified_trade_value: snapshot.verified_trade_value, total_orders: snapshot.total_orders, activityCount: snapshot.activity?.length || 0 }));
+    const value = metricValue(snapshot, rule);
+    const canonical = JSON.stringify({ sourceFingerprint, condition: rule.id, threshold: rule.threshold, metric: rule.metric, recordCount: recordCount(snapshot) });
+    const commitment = await sha256(canonical);
+    setProof({ id: `PEP-${commitment.slice(0, 12).toUpperCase()}`, commitment, condition: rule.label, ruleId: rule.id, threshold: rule.threshold, eligible: value >= rule.threshold, generatedAt: new Date().toISOString(), recordCount: recordCount(snapshot), sourceFingerprint });
     setBusy(false);
   };
-  return <section className="lab-card"><div className="lab-card-head"><div><div className="eyebrow">Private credit identity</div><h3>Generate a private credit proof</h3><p>Creates a local commitment from demo records. This build does not claim a zk-SNARK or network verification.</p></div><LockKeyhole size={21} /></div><div className="lab-controls"><label>Verified sales threshold<select value={threshold} onChange={(e) => setThreshold(Number(e.target.value))}><option value="5000">₹5,000</option><option value="10000">₹10,000</option><option value="25000">₹25,000</option></select></label><button className="button primary" onClick={generate} disabled={busy}>{busy ? 'Hashing locally…' : 'Generate demo proof'} <Sparkles size={14} /></button></div>{proof && <div className="lab-result"><Check size={16} /><div><strong>{proof.id}</strong><span>Commitment {proof.commitment.slice(0, 20)}… · {proof.status.replace('_', ' ')}</span></div></div>}<small className="lab-note">No buyer addresses, dates, or unit prices are shared. A production ZK circuit and verifier are not included.</small></section>;
+
+  const verify = async () => {
+    if (!proof || !snapshot) return;
+    setVerifyState('checking');
+    const sourceFingerprint = snapshot.credential?.fingerprint || await sha256(JSON.stringify({ verified_harvests: snapshot.verified_harvests, completed_sales: snapshot.completed_sales, verified_payments: snapshot.verified_payments, verified_deliveries: snapshot.verified_deliveries, verified_trade_value: snapshot.verified_trade_value, total_orders: snapshot.total_orders, activityCount: snapshot.activity?.length || 0 }));
+    const expected = await sha256(JSON.stringify({ sourceFingerprint, condition: proof.ruleId, threshold: proof.threshold, metric: proofRules.find((item) => item.id === proof.ruleId)?.metric, recordCount: recordCount(snapshot) }));
+    setVerifyState(expected === proof.commitment ? 'valid' : 'invalid');
+  };
+
+  const copy = async (value: string) => { await navigator.clipboard?.writeText(value); };
+  return <section className="lab-card private-proof-card"><div className="lab-card-head"><div><div className="eyebrow">Private Economic Proof</div><h3>Prove activity without exposing transactions</h3><p>Prove that your verified economic activity meets a requirement without exposing individual transaction records.</p></div><LockKeyhole size={21} /></div><div className="prototype-label"><ShieldCheck size={14} /> Prototype — Cryptographic Commitment</div>{error ? <div className="lab-error"><CircleAlert size={15} />{error}</div> : !snapshot ? <div className="lab-loading"><Sparkles size={15} /> Loading verified Economic Passport aggregates…</div> : <><div className="lab-controls"><label>Proof condition<select value={selectedRule} onChange={(e) => { setSelectedRule(e.target.value); setProof(null); setVerifyState('idle'); }}>{proofRules.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={generate} disabled={busy}>{busy ? 'Creating commitment…' : 'Generate private proof'} <Sparkles size={14} /></button></div>{proof && <div className="proof-result"><div className="proof-result-top"><div className={`proof-status ${proof.eligible ? 'eligible' : 'not-eligible'}`}><span>{proof.eligible ? <Check size={14} /> : <CircleAlert size={14} />}</span>{proof.eligible ? 'Eligible' : 'Not eligible'}</div><span className="proof-private"><LockKeyhole size={12} /> Private aggregates only</span></div><div className="proof-grid"><div><span>Proof ID</span><strong>{proof.id}</strong><button className="copy-button" onClick={() => copy(proof.id)} aria-label="Copy proof ID"><Copy size={13} /></button></div><div><span>Commitment / SHA-256</span><strong className="proof-hash">{proof.commitment}</strong><button className="copy-button" onClick={() => copy(proof.commitment)} aria-label="Copy commitment"><Clipboard size={13} /></button></div><div><span>Condition</span><strong>{proof.condition}</strong></div><div><span>Records used</span><strong>{proof.recordCount} verified records</strong></div><div><span>Generated</span><strong>{new Date(proof.generatedAt).toLocaleString('en-IN')}</strong></div></div><div className="proof-checks"><span><Check size={13} /> Proof generated</span><span><Check size={13} /> Data remains private</span><span><Check size={13} /> Cryptographic commitment created</span>{proof.eligible && <span><Check size={13} /> Condition satisfied</span>}</div><div className="verify-row"><button className="button outline" onClick={verify} disabled={verifyState === 'checking'}>{verifyState === 'checking' ? 'Checking locally…' : 'Verify proof locally'} <ShieldCheck size={14} /></button>{verifyState === 'valid' && <span className="verify-success"><Check size={14} /> Commitment matches current Passport data</span>}{verifyState === 'invalid' && <span className="verify-failure"><CircleAlert size={14} /> Verification failed — commitment does not match</span>}</div></div>}<small className="lab-note">This prototype is not a production zk-SNARK and is not currently verified on-chain. It never requests wallet signing or sends private economic records to an external service.</small></>}</section>;
 }
 
 export function AutonomousAgentPanel() {
@@ -48,7 +73,6 @@ export function HarvestFuturesLaunchpad() {
 }
 
 export default function HackathonLab() {
-  const harvests = useMemo(() => demoHarvests, []);
-  const orders = useMemo(() => demoOrders, []);
-  return <AppShell title="Hackathon Lab" subtitle="Safe presentation mode · Solana Devnet"><PageFrame><div className="page-intro"><div><div className="eyebrow">Experimental surfaces</div><h2>Show the roadmap without overclaiming.</h2><p>These demos are isolated from real payments. Existing wallet connection and settlement remain strictly Solana Devnet with explicit user approval.</p></div><span className="verified-chip"><ShieldCheck size={13} /> Demo mode</span></div><div className="lab-banner"><ShieldCheck size={18} /><div><strong>Safe by default</strong><span>Local hashing and intent previews only. No token issuance, autonomous signing, or fake blockchain confirmations.</span></div></div><div className="lab-grid"><ZKCreditDashboard harvests={harvests} orders={orders} /><AutonomousAgentPanel /><HarvestFuturesLaunchpad /></div><div className="info-strip"><div className="info-strip-icon"><ShieldCheck size={18} /></div><div><strong>Real settlement remains unchanged.</strong><span>When a buyer pays, the existing flow still uses wallet approval, Solana Devnet confirmation, exact lamport checks, and backend-independent verification.</span></div></div></PageFrame></AppShell>;
+  const [showRoadmap, setShowRoadmap] = useState(false);
+  return <AppShell title="Innovation Lab" subtitle="Phase 1 · Safe presentation mode"><PageFrame><div className="page-intro"><div><div className="eyebrow">Private Economic Proof</div><h2>Prove a requirement, not a private history.</h2><p>Generate a local cryptographic commitment from your existing verified Economic Passport records.</p></div><span className="verified-chip"><ShieldCheck size={13} /> Prototype</span></div><div className="lab-banner"><ShieldCheck size={18} /><div><strong>Privacy-first, local verification</strong><span>Only verified aggregate records are used. Individual buyers, prices, dates, wallets, and transactions never appear in the proof result.</span></div></div><div className="lab-grid"><ZKCreditDashboard />{showRoadmap && <><AutonomousAgentPanel /><HarvestFuturesLaunchpad /></>}</div><div className="lab-toggle"><button className="button outline" onClick={() => setShowRoadmap(!showRoadmap)}>{showRoadmap ? 'Focus on Private Economic Proof' : 'Show other roadmap concepts'}</button></div><div className="info-strip"><div className="info-strip-icon"><ShieldCheck size={18} /></div><div><strong>Existing Solana functionality is unchanged.</strong><span>Real payments continue to use explicit wallet approval, Solana Devnet confirmation, exact lamport checks, and backend-independent verification.</span></div></div></PageFrame></AppShell>;
 }
