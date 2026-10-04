@@ -42,6 +42,7 @@ export const navItems = [
   { href: '/passport', label: 'Economic Passport', icon: ShieldCheck, group: 'Trust' },
   { href: '/verify/CR-CRED-00001', label: 'Credentials', icon: FileCheck2, group: 'Trust' },
   { href: '/insights', label: 'Insights', icon: BarChart3, group: 'Intelligence' },
+  { href: '/lab', label: 'Hackathon Lab', icon: Sparkles, group: 'Intelligence' },
   { href: '/profile', label: 'Profile', icon: WalletCards, group: 'Account' },
 ];
 
