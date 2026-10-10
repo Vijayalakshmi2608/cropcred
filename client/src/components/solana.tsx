@@ -7,7 +7,7 @@ export function NetworkBadge({ wrong = false }: { wrong?: boolean }) { return <s
 
 export function WalletAddress({ address, copyable = false }: { address: string | null; copyable?: boolean }) { const { copyAddress } = useSolanaWallet(); if (!address) return <span className="wallet-address muted">Not connected</span>; return <span className="wallet-address">{shortenAddress(address)}{copyable && <button onClick={copyAddress} aria-label="Copy wallet address"><Copy size={12} /></button>}</span>; }
 
-export function WalletBalance() { const { balance } = useSolanaWallet(); return <div className="wallet-balance"><span>Devnet balance</span><strong>{balance === null ? 'Balance unavailable' : `${balance.toFixed(2)} SOL`}</strong><small>DEVNET · test funds only</small></div>; }
+export function WalletBalance() { const { balance } = useSolanaWallet(); return <div className="wallet-balance"><span>Devnet balance</span><strong>{balance === null ? 'Balance unavailable' : `${balance.toFixed(2)} SOL`}</strong><small>DEVNET · network funds</small></div>; }
 
 export function SolanaWalletButton({ compact = false }: { compact?: boolean }) { const { connected, connecting, publicKey, network, connect, disconnect } = useSolanaWallet(); if (connected && network === 'devnet') return <button className={`wallet-connected ${compact ? 'compact' : ''}`} onClick={disconnect}><span className="wallet-status" /><span><strong>Wallet Connected</strong><WalletAddress address={publicKey} /></span><LogOut size={14} /></button>; return <button className={`wallet-connect-button ${compact ? 'compact' : ''}`} onClick={connect} disabled={connecting}><WalletCards size={15} />{connecting ? 'Connecting...' : 'Connect Solana Wallet'}</button>; }
 

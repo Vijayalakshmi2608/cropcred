@@ -1,10 +1,11 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import sqlite3
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / 'cropcred.db'
+DB_PATH = Path(os.getenv('CROP_CRED_DB_PATH', str(BASE_DIR / 'cropcred.db'))).expanduser()
 
 SCHEMA = '''
 PRAGMA foreign_keys = ON;
@@ -386,21 +387,19 @@ def seed_db():
           (id,farmer_id,crop,quantity,unit,harvest_date,expected_price,location,description,status)
           VALUES (?,?,?,?,?,?,?,?,?,?)''', harvests)
         listing_rows = [
-            ('listing-01','CR-HRV-00041','farmer-01','Tomatoes',500,'kg',35,'2026-09-18','VERIFIED','Kanchipuram, Tamil Nadu'),
-            ('listing-02','CR-HRV-00039','farmer-01','Coconut',180,'units',28,'2026-09-11','VERIFIED','Kanchipuram, Tamil Nadu'),
-            ('listing-03','CR-HRV-00037','farmer-02','Tomatoes',420,'kg',32,'2026-09-05','VERIFIED','Chittoor, Andhra Pradesh'),
-            ('listing-04','CR-HRV-00036','farmer-02','Mangoes',650,'kg',58,'2026-09-02','VERIFIED','Chittoor, Andhra Pradesh'),
-            ('listing-05','CR-HRV-00035','farmer-03','Onions',800,'kg',26,'2026-08-24','VERIFIED','Nashik, Maharashtra'),
-            ('listing-06','CR-HRV-00036','farmer-02','Millets',420,'kg',62,'2026-08-22','VERIFIED','Chittoor, Andhra Pradesh'),
-            ('listing-07','CR-HRV-00037','farmer-03','Tomatoes',260,'kg',30,'2026-08-20','VERIFIED','Nashik, Maharashtra'),
-            ('listing-08','CR-HRV-00042','farmer-01','Bananas',300,'kg',42,'2026-08-19','VERIFIED','Kanchipuram, Tamil Nadu'),
+            ('listing-01','CR-HRV-00041','farmer-01','Tomatoes',465,'kg',35,'2026-09-18','VERIFIED','Kanchipuram, Tamil Nadu'),
+            ('listing-02','CR-HRV-00039','farmer-01','Coconut',140,'units',28,'2026-09-11','VERIFIED','Kanchipuram, Tamil Nadu'),
+            ('listing-03','CR-HRV-00037','farmer-02','Tomatoes',360,'kg',32,'2026-09-05','VERIFIED','Chittoor, Andhra Pradesh'),
+            ('listing-04','CR-HRV-00036','farmer-02','Mangoes',570,'kg',58,'2026-09-02','VERIFIED','Chittoor, Andhra Pradesh'),
+            ('listing-05','CR-HRV-00035','farmer-03','Onions',240,'kg',26,'2026-08-28','PENDING','Nashik, Maharashtra'),
+            ('listing-08','CR-HRV-00042','farmer-01','Bananas',180,'kg',42,'2026-09-20','PENDING','Kanchipuram, Tamil Nadu'),
         ]
         connection.executemany('''INSERT INTO marketplace_listings
           (id,harvest_id,farmer_id,crop,quantity_available,unit,price_per_unit,harvest_date,verification_status,location)
           VALUES (?,?,?,?,?,?,?,?,?,?)''', listing_rows)
         crop_batches_seed = [
-            ('CRP-1041','farmer-01','CR-HRV-00041','Tomatoes','Ponni',500,'kg','2026-09-18',30,38,'AVAILABLE','CERTIFIED','demo-batch-1041'),
-            ('CRP-1042','farmer-02','CR-HRV-00037','Tomatoes','Arka Rakshak',420,'kg','2026-09-05',32,40,'AVAILABLE','CERTIFIED','demo-batch-1042'),
+            ('CRP-1041','farmer-01','CR-HRV-00041','Tomatoes','Ponni',465,'kg','2026-09-18',30,38,'AVAILABLE','CERTIFIED','seed-batch-1041'),
+            ('CRP-1042','farmer-02','CR-HRV-00037','Tomatoes','Arka Rakshak',360,'kg','2026-09-05',32,40,'AVAILABLE','CERTIFIED','seed-batch-1042'),
         ]
         connection.executemany('''INSERT OR IGNORE INTO crop_batches
           (id,farmer_id,harvest_id,crop_name,variety,quantity,unit,harvest_date,expected_price_min,expected_price_max,availability_status,quality_status,fingerprint)
@@ -422,6 +421,12 @@ def seed_db():
             ('buyer-1004', 'The Green Table', 'RESTAURANT', 'VERIFIED'),
             ('buyer-1005', 'Daily Basket', 'RETAILER', 'VERIFIED'),
         ])
+        connection.execute('''INSERT OR IGNORE INTO crop_auctions
+          (id,buyer_name,buyer_type,crop,crop_batch_id,quantity,unit,price_min,price_max,deadline,delivery_location,quality_requirements,evidence_requirements,status,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+            'AUC-1001', 'South India Fresh Foods', 'PROCESSOR', 'Tomatoes', 'CRP-1042', 200, 'kg', 34, 42,
+            '2026-10-20', 'Coimbatore', 'Grade A, sorted', 'Batch evidence and delivery estimate', 'OPEN', '2026-10-10T00:00:00'
+        ))
         orders = [
             ('CR-ORD-00231','CR-HRV-00041','farmer-01','Chennai Restaurant','RESTAURANT',10,'kg',350,'COMPLETED','PAID'),
             ('CR-ORD-00229','CR-HRV-00039','farmer-01','The Green Table','RESTAURANT',40,'units',1120,'DELIVERED','PAID'),

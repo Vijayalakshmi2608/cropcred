@@ -47,6 +47,7 @@ export type Order = {
   status: 'ORDER PLACED' | 'PAYMENT VERIFIED' | 'DELIVERY CONFIRMED' | 'COMPLETED';
   date: string;
   wallet: string;
+  rawStatus?: string;
 };
 
 export const currentFarmer: Farmer = {

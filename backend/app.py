@@ -11,7 +11,7 @@ from flask_cors import CORS
 from database import get_connection, init_db, seed_db
 
 app = Flask(__name__)
-CORS_ORIGINS = [origin.strip() for origin in os.getenv('CROP_CRED_CORS_ORIGINS', '*').split(',') if origin.strip()]
+CORS_ORIGINS = [origin.strip().rstrip('/') for origin in os.getenv('CROP_CRED_CORS_ORIGINS', '*').split(',') if origin.strip()]
 CORS(app, resources={r'/api/*': {'origins': CORS_ORIGINS}})
 DEVNET_RPC = os.getenv('SOLANA_DEVNET_RPC_URL', 'https://api.devnet.solana.com')
 _rpc_host = (urlparse(DEVNET_RPC).hostname or '').lower()
@@ -100,6 +100,8 @@ def auction_payload(item):
 
 
 def create_order_record(connection, farmer_id, buyer_name, buyer_type, harvest_id, quantity, unit, total_amount):
+    if not reserve_inventory(connection, harvest_id, quantity):
+        return None
     order_count = connection.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
     order_id = f"CR-ORD-{order_count + 232:05d}"
     connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature)
@@ -107,6 +109,24 @@ def create_order_record(connection, farmer_id, buyer_name, buyer_type, harvest_i
     connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING'))
     created = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone())
     return created
+
+
+def reserve_inventory(connection, harvest_id, quantity):
+    """Reserve the same units from the listing and linked crop batch."""
+    try:
+        quantity = float(quantity)
+    except (TypeError, ValueError):
+        return False
+    if quantity <= 0:
+        return False
+    listing = connection.execute('SELECT id FROM marketplace_listings WHERE harvest_id=? AND quantity_available>=? ORDER BY created_at LIMIT 1', (harvest_id, quantity)).fetchone()
+    if not listing:
+        return False
+    updated = connection.execute('UPDATE marketplace_listings SET quantity_available=quantity_available-? WHERE id=? AND quantity_available>=?', (quantity, listing['id'], quantity))
+    if updated.rowcount != 1:
+        return False
+    connection.execute("UPDATE crop_batches SET quantity=MAX(0, quantity-?), availability_status=CASE WHEN quantity-? <= 0 THEN 'SOLD' ELSE availability_status END WHERE harvest_id=?", (quantity, quantity, harvest_id))
+    return True
 
 
 def rpc_call(method, params):
@@ -215,7 +235,7 @@ def ensure_crop_batch_credential(connection, batch_id, wallet_address=None, tran
             connection.execute('UPDATE crop_batch_credentials SET verified_at=? WHERE batch_id=?', (now, batch_id))
     else:
         connection.execute('''INSERT INTO crop_batch_credentials (id,batch_id,crop_id,farmer_id,farmer_identity_ref,crop_type,quantity,unit,harvest_id,harvest_date,harvest_location,evidence_hash,metadata_hash,status,network,wallet_address,transaction_signature,verified_at,metadata_json,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
             credential_reference,
             batch_id,
             batch['harvest_id'],
@@ -287,7 +307,12 @@ def credential_evidence(connection, farmer_id):
 
 @app.get('/api/health')
 def health():
-    return jsonify({'status': 'ok'})
+    connection = get_connection()
+    try:
+        counts = {table: int(connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]) for table in ('farmers', 'harvests', 'crop_batches', 'marketplace_listings', 'demands', 'orders')}
+        return jsonify({'status': 'ok', 'database': 'ready', 'seeded': counts['farmers'] > 0 and counts['harvests'] > 0, 'counts': counts})
+    finally:
+        connection.close()
 
 @app.get('/api/farmers')
 def get_farmers():
@@ -402,7 +427,21 @@ def create_crop_batch():
     if not harvest: connection.close(); return fail('Linked harvest not found', 404)
     existing = connection.execute('SELECT id FROM crop_batches WHERE harvest_id=?', (harvest_id,)).fetchone()
     if existing:
-        item = crop_batch_query(connection, 'b.id=?', (existing['id'],))[0]; connection.close(); return ok(item)
+        try:
+            quantity = float(data.get('quantity', harvest['quantity'])); price_min = float(data.get('expected_price_min', harvest['expected_price'])); price_max = float(data.get('expected_price_max', price_min))
+        except (TypeError, ValueError):
+            connection.close(); return fail('Quantity and expected price range must be numbers.')
+        if quantity <= 0 or quantity > harvest['quantity'] or price_min < 0 or price_max < price_min:
+            connection.close(); return fail('Use a positive quantity within the harvest and a valid price range.')
+        availability = str(data.get('availability_status', 'AVAILABLE')).upper(); quality = str(data.get('quality_status', 'PENDING')).upper()
+        if availability not in {'AVAILABLE', 'RESERVED', 'SOLD', 'UNAVAILABLE'} or quality not in {'PENDING', 'SELF_DECLARED', 'CERTIFICATION_PENDING', 'CERTIFIED'}:
+            connection.close(); return fail('Invalid availability or quality status.')
+        unit = str(data.get('unit', harvest['unit'])).strip() or harvest['unit']
+        canonical = {'harvest_id': harvest_id, 'farmer_id': harvest['farmer_id'], 'crop_name': harvest['crop'], 'variety': variety, 'quantity': quantity, 'unit': unit, 'harvest_date': harvest['harvest_date'], 'expected_price_min': price_min, 'expected_price_max': price_max, 'availability_status': availability, 'quality_status': quality}
+        fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        connection.execute('''UPDATE crop_batches SET crop_name=?, variety=?, quantity=?, unit=?, expected_price_min=?, expected_price_max=?, availability_status=?, quality_status=?, fingerprint=? WHERE id=?''', (harvest['crop'], variety, quantity, unit, price_min, price_max, availability, quality, fingerprint, existing['id']))
+        ensure_crop_batch_credential(connection, existing['id'])
+        connection.commit(); item = crop_batch_query(connection, 'b.id=?', (existing['id'],))[0]; connection.close(); return ok(item)
     try:
         quantity = float(data.get('quantity', harvest['quantity'])); price_min = float(data.get('expected_price_min', harvest['expected_price'])); price_max = float(data.get('expected_price_max', price_min))
     except (TypeError, ValueError):
@@ -440,12 +479,29 @@ def create_harvest():
     existing = connection.execute('SELECT COUNT(*) FROM harvests').fetchone()[0]
     harvest_id = f"CR-HRV-{existing + 43:05d}"
     try:
+        farmer_id = data.get('farmer_id', 'farmer-01')
+        if not connection.execute('SELECT id FROM farmers WHERE id=?', (farmer_id,)).fetchone():
+            connection.close(); return fail('Farmer not found', 404)
         connection.execute('''INSERT INTO harvests (id,farmer_id,crop,quantity,unit,harvest_date,expected_price,location,description,status,proof_hash)
-          VALUES (?,?,?,?,?,?,?,?,?,'REGISTERED',NULL)''', (harvest_id, data.get('farmer_id', 'farmer-01'), data['crop'], quantity, data['unit'], data['harvest_date'], price, data['location'], data.get('description', '')))
+          VALUES (?,?,?,?,?,?,?,?,?,'REGISTERED',NULL)''', (harvest_id, farmer_id, data['crop'], quantity, data['unit'], data['harvest_date'], price, data['location'], data.get('description', '')))
+        # New supply is immediately visible as a registered (not verified) listing.
+        # Verification status remains explicit until the farmer adds evidence.
+        connection.execute('''INSERT INTO marketplace_listings (id,harvest_id,farmer_id,crop,quantity_available,unit,price_per_unit,harvest_date,verification_status,location)
+          VALUES (?,?,?,?,?,?,?,?,?,?)''', (f'listing-{harvest_id}', harvest_id, farmer_id, data['crop'], quantity, data['unit'], price, data['harvest_date'], 'REGISTERED', data['location']))
+        canonical = {'harvest_id': harvest_id, 'farmer_id': farmer_id, 'crop_name': data['crop'], 'variety': 'Unspecified variety', 'quantity': quantity, 'unit': data['unit'], 'harvest_date': data['harvest_date'], 'expected_price_min': price, 'expected_price_max': price, 'availability_status': 'AVAILABLE', 'quality_status': 'PENDING'}
+        fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        batch_id = f'CRP-{existing + 1043:04d}'
+        while connection.execute('SELECT 1 FROM crop_batches WHERE id=?', (batch_id,)).fetchone():
+            existing += 1; batch_id = f'CRP-{existing + 1043:04d}'
+        connection.execute('''INSERT INTO crop_batches (id,farmer_id,harvest_id,crop_name,variety,quantity,unit,harvest_date,expected_price_min,expected_price_max,availability_status,quality_status,fingerprint)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', (batch_id, farmer_id, harvest_id, data['crop'], 'Unspecified variety', quantity, data['unit'], data['harvest_date'], price, price, 'AVAILABLE', 'PENDING', fingerprint))
+        ensure_crop_batch_credential(connection, batch_id)
+        credential_snapshot(connection, farmer_id)
         connection.commit()
         created = dict(connection.execute('SELECT h.*, f.name AS farmer FROM harvests h JOIN farmers f ON f.id=h.farmer_id WHERE h.id=?', (harvest_id,)).fetchone())
         return ok(harvest_payload(created), 201)
-    except Exception as exc:
+    except Exception:
+        app.logger.exception('Harvest registration failed for farmer=%s crop=%s', data.get('farmer_id', 'farmer-01'), data.get('crop'))
         return fail('Could not register harvest. Check the farmer and submitted fields.', 400)
     finally: connection.close()
 
@@ -561,6 +617,8 @@ def create_auction_offer(auction_id):
     if not auction: connection.close(); return fail('Auction not found', 404)
     if auction['status'] not in ('OPEN','OFFER_RECEIVED'):
         connection.close(); return fail('This auction is no longer accepting offers.', 409)
+    if quantity > auction['quantity'] or offered_price < auction['price_min'] or offered_price > auction['price_max']:
+        connection.close(); return fail('Offer quantity or price is outside the auction requirements.', 400)
     farmer_id = str(data.get('farmer_id') or '').strip() or 'farmer-01'
     if not connection.execute('SELECT id FROM farmers WHERE id=?', (farmer_id,)).fetchone(): connection.close(); return fail('Farmer not found', 404)
     crop_batch_id = data.get('crop_batch_id') or None
@@ -596,6 +654,7 @@ def award_auction_offer(auction_id):
         if not harvest: return fail('This farmer has no valid verified harvest for the awarded auction quantity.', 409)
         total_amount = float(offer['quantity']) * float(offer['offered_price'])
         order = create_order_record(connection, offer['farmer_id'], auction['buyer_name'], auction['buyer_type'], harvest['id'], offer['quantity'], auction['unit'], total_amount)
+        if not order: return fail('The awarded quantity is no longer available in the linked inventory.', 409)
         connection.execute("UPDATE auction_offers SET status='ACCEPTED', updated_at=? WHERE auction_id=? AND id=?", (datetime.now().isoformat(timespec='seconds'), auction_id, offer_id))
         connection.execute("UPDATE auction_offers SET status='REJECTED', updated_at=? WHERE auction_id=? AND id<>? AND status IN ('SUBMITTED','WITHDRAWN')", (datetime.now().isoformat(timespec='seconds'), auction_id, offer_id))
         connection.execute("UPDATE crop_auctions SET status='AWARDED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), auction_id))
@@ -613,6 +672,8 @@ def accept_demand_response(demand_id, response_id):
     harvest = connection.execute("SELECT * FROM harvests WHERE farmer_id=? AND crop LIKE ? AND status='VERIFIED' AND quantity>=? ORDER BY harvest_date DESC LIMIT 1", (response['farmer_id'], demand['crop'], response['quantity_offered'])).fetchone()
     if not harvest: connection.close(); return fail('Farmer has no matching verified harvest with sufficient quantity.', 409)
     order_id = f"CR-ORD-{connection.execute('SELECT COUNT(*) FROM orders').fetchone()[0] + 232:05d}"; total = response['quantity_offered'] * response['expected_price']
+    if not reserve_inventory(connection, harvest['id'], response['quantity_offered']):
+        connection.close(); return fail('The matched quantity is no longer available in the linked inventory.', 409)
     connection.execute("UPDATE demand_responses SET status='ACCEPTED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), response_id)); connection.execute("UPDATE demand_responses SET status='REJECTED', updated_at=? WHERE demand_id=? AND id<>? AND status IN ('SUBMITTED','SHORTLISTED')", (datetime.now().isoformat(timespec='seconds'), demand_id, response_id)); connection.execute("UPDATE demands SET status='ORDER_CREATED', updated_at=? WHERE id=?", (datetime.now().isoformat(timespec='seconds'), demand_id)); connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature) VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, harvest['id'], response['farmer_id'], demand['buyer_name'], demand['buyer_type'], response['quantity_offered'], demand['unit'], total)); connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING')); connection.commit(); order = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()); connection.close(); return ok(order, 201)
 
 @app.get('/api/buyers/<buyer_id>/profile')
@@ -654,6 +715,8 @@ def create_order():
         connection.rollback(); connection.close(); return fail('Requested quantity is no longer available.', 409)
     connection.execute('''INSERT INTO orders (id,harvest_id,farmer_id,buyer_name,buyer_type,quantity,unit,total_amount,status,payment_status,transaction_signature)
       VALUES (?,?,?,?,?,?,?,?,'PENDING_PAYMENT','PENDING',NULL)''', (order_id, listing['harvest_id'], listing['farmer_id'], data['buyer_name'], data.get('buyer_type', 'RETAILER'), quantity, listing['unit'], total))
+    # Keep the linked crop batch inventory in sync with the reserved marketplace quantity.
+    connection.execute("UPDATE crop_batches SET quantity=MAX(0, quantity-?), availability_status=CASE WHEN quantity-? <= 0 THEN 'SOLD' ELSE availability_status END WHERE harvest_id=?", (quantity, quantity, listing['harvest_id']))
     connection.execute('INSERT INTO deliveries (id,order_id,status) VALUES (?,?,?)', (f'delivery-{order_id}', order_id, 'PENDING'))
     connection.commit()
     created = dict(connection.execute('SELECT * FROM orders WHERE id=?', (order_id,)).fetchone()); connection.close()

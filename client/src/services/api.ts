@@ -2,12 +2,12 @@ import { currentFarmer } from '../data/mockData';
 import type { Demand, Harvest, Listing, Order } from '../data/mockData';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
-const PUBLIC_API_BASE = 'https://5001-i8d09a2vc4cizj8qt1jla-c5cd14fd.sg2.manus.computer/api';
-const API_BASE = (configuredApiBase || PUBLIC_API_BASE).replace(/\/$/, '');
+const API_BASE = String(configuredApiBase || '').replace(/\/$/, '');
 export const CROP_CRED_API_BASE = API_BASE;
-export const CROP_CRED_API_CONFIGURED = Boolean(configuredApiBase || PUBLIC_API_BASE);
+export const CROP_CRED_API_CONFIGURED = Boolean(API_BASE);
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  if (!API_BASE) throw new Error('CropCred backend is not configured. Set the production API URL before building the Android app.');
   const headers = new Headers(options?.headers);
   if (options?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   let response: Response;
@@ -27,10 +27,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const dateLabel = (value: string) => { if (!value) return value; const date = new Date(value.includes('T') ? value : `${value}T12:00:00`); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
 export function mapHarvest(item: any): Harvest { return { id: item.id, crop: item.crop, quantity: Number(item.quantity), unit: item.unit, date: item.harvest_date_label || dateLabel(item.harvest_date), price: item.expected_price_label || `₹${item.expected_price}/${item.unit}`, status: item.status, location: item.location, farmer: item.farmer || currentFarmer.name, description: item.description }; }
 export function mapListing(item: any): Listing { return { ...mapHarvest({ ...item, expected_price: item.price_per_unit, expected_price_label: item.price_label, harvest_date: item.harvest_date }), listingId: item.id, available: Number(item.available ?? item.quantity_available), verification: item.verification || 'Verified harvest' }; }
-export function mapOrder(item: any): Order { const statusMap: Record<string, Order['status']> = { PLACED: 'ORDER PLACED', PENDING_PAYMENT: 'ORDER PLACED', PAYMENT_PROCESSING: 'PAYMENT VERIFIED', PAID: 'PAYMENT VERIFIED', PROCESSING: 'PAYMENT VERIFIED', OUT_FOR_DELIVERY: 'DELIVERY CONFIRMED', DELIVERED: 'DELIVERY CONFIRMED', COMPLETED: 'COMPLETED' }; return { id: item.id, crop: item.crop || 'Harvest supply', quantity: `${item.quantity} ${item.unit}`, amount: item.amount_label || `₹${item.total_amount}`, buyer: item.buyer_name, status: statusMap[item.status] || 'ORDER PLACED', date: dateLabel(item.created_at || '2026-09-22'), wallet: item.transaction_signature ? item.transaction_signature : 'Awaiting Solana transaction' }; }
+export function mapOrder(item: any): Order { const statusMap: Record<string, Order['status']> = { PLACED: 'ORDER PLACED', PENDING_PAYMENT: 'ORDER PLACED', PAYMENT_PROCESSING: 'PAYMENT VERIFIED', PAID: 'PAYMENT VERIFIED', PROCESSING: 'PAYMENT VERIFIED', OUT_FOR_DELIVERY: 'DELIVERY CONFIRMED', DELIVERED: 'DELIVERY CONFIRMED', COMPLETED: 'COMPLETED' }; return { id: item.id, crop: item.crop || 'Harvest supply', quantity: `${item.quantity} ${item.unit}`, amount: item.amount_label || `₹${item.total_amount}`, buyer: item.buyer_name, status: statusMap[item.status] || 'ORDER PLACED', date: dateLabel(item.created_at || '2026-09-22'), wallet: item.transaction_signature ? item.transaction_signature : 'Awaiting Solana transaction', rawStatus: item.status }; }
 export function mapDemand(item: any): Demand { return { id: item.id, buyerType: item.buyer_type, buyer: item.buyer_name, crop: item.crop, quantity: item.quantity_label || `${item.quantity} ${item.unit}`, price: item.price_label || `₹${item.price_min}–₹${item.price_max}/${item.unit}`, location: item.location, due: item.deadline, dueTone: String(item.deadline).toLowerCase().includes('day') && !String(item.deadline).includes('12') ? 'urgent' : 'calm' }; }
 export async function getHarvests(): Promise<Harvest[]> { return (await request<any[]>('/harvests')).map(mapHarvest); }
 export async function createHarvest(data: any): Promise<Harvest> { return mapHarvest(await request<any>('/harvests', { method: 'POST', body: JSON.stringify(data) })); }
+export async function updateHarvest(id: string, data: any): Promise<Harvest> { return mapHarvest(await request<any>(`/harvests/${id}`, { method: 'PUT', body: JSON.stringify(data) })); }
 export async function getCropBatches() { return request<any[]>('/crop-batches'); }
 export async function getCropBatch(id: string) { return request<any>(`/crop-batches/${id}`); }
 export async function createCropBatch(data: any) { return request<any>('/crop-batches', { method: 'POST', body: JSON.stringify(data) }); }
