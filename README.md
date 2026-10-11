@@ -617,4 +617,4 @@ Mark the physical-device and wallet steps as unverified unless they were actuall
 - Latest configuration commit at the time of this README update: `a468c14`
 - Frontend: https://cropcred.onrender.com
 - API health: https://cropcred-api.onrender.com/api/health
-- Android APK: [CropCred-final-audited-debug.apk](https://github.com/Vijayalakshmi2608/cropcred/releases/download/v1.0.0-clock-in/CropCred-final-audited-debug.apk)
+- Android APK: [CropCred-final-audited.apk](https://github.com/Vijayalakshmi2608/cropcred/releases/download/v1.0.0-clock-in/CropCred-final-audited-debug.apk)

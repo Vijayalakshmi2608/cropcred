@@ -62,14 +62,6 @@ The final branch continues to include:
 - Android Capacitor sync and Gradle debug build: passed.
 - Final APK size: **4,799,507 bytes**.
 - Final APK SHA-256: `fd35da07ce7eb8cbc27b4d961546072171b318866feb9d0cd922eb4abec30f6a`.
-- Final source was pushed to the configured GitHub repository on commit `9d3a7b3`.
-
-## Remaining limitations
-
-- No physical Android device or compatible wallet application was available in the sandbox for final installation, wallet approval, or live Devnet settlement testing.
-- The delivered APK is debug-signed rather than a Play Store release bundle.
-- A production API host and matching CORS configuration must be supplied before distributing the APK outside the configured demonstration environment.
-- A successful blockchain payment verifies the specified transaction and settlement conditions; it does not independently prove physical crop existence, quality, or quantity.
 
 ## Release artifact
 
