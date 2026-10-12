@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Capacitor } from '@capacitor/core';
+import { App } from '@capacitor/app';
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { SolanaMobileWalletAdapter, createDefaultAddressSelector, createDefaultAuthorizationResultCache } from '@solana-mobile/wallet-adapter-mobile';
 import { updateFarmerWallet } from '../services/api';
@@ -44,13 +45,32 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     catch { setBalance(null); }
   }, [network, publicKey]);
 
+  const readNativeAddress = useCallback(() => {
+    const adapter = nativeAdapter as any;
+    return adapter.publicKey?.toString?.() || adapter.accounts?.[0]?.address || null;
+  }, [nativeAdapter]);
+
+  const syncNativeWallet = useCallback(async () => {
+    if (!native) return;
+    const address = readNativeAddress();
+    if (address) {
+      setPublicKey(address);
+      setConnected(true);
+      await persist(address);
+      await refreshBalance();
+    } else if (!nativeAdapter.connected) {
+      setConnected(false);
+    }
+  }, [native, nativeAdapter, persist, readNativeAddress, refreshBalance]);
+
   const connect = useCallback(async () => {
     if (!activeProvider) { setMessage('Please install or unlock a compatible Solana wallet.'); return; }
+    if (connecting) return;
     setConnecting(true); setMessage(null);
     try {
       if (native) {
         await nativeAdapter.connect();
-        const address = nativeAdapter.publicKey?.toString();
+        const address = readNativeAddress();
         if (!address) throw new Error('No public address returned');
         setPublicKey(address); setConnected(true); await persist(address); setMessage('Wallet connected on Solana Devnet.');
       } else {
@@ -64,7 +84,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
       const cancelled = error?.code === 4001 || /reject|cancel/i.test(String(error?.message || ''));
       setMessage(cancelled ? 'Wallet connection was cancelled.' : error?.message || 'Wallet connection could not be completed.');
     } finally { setConnecting(false); }
-  }, [activeProvider, browserProvider, native, nativeAdapter, persist]);
+  }, [activeProvider, browserProvider, connecting, native, nativeAdapter, persist, readNativeAddress]);
 
   const disconnect = useCallback(async () => {
     try { await activeProvider?.disconnect(); } finally { setConnected(false); setPublicKey(null); setBalance(null); await persist(null); setMessage('Wallet disconnected.'); }
@@ -80,15 +100,29 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { if (publicKey && activeProvider) { setConnected(native ? nativeAdapter.connected : Boolean(browserProvider?.isConnected || browserProvider?.publicKey)); refreshBalance(); } }, [activeProvider, browserProvider, native, nativeAdapter, publicKey, refreshBalance]);
   useEffect(() => {
+    if (!native) return;
+    let disposed = false;
+    const resume = () => { if (!disposed) void syncNativeWallet(); };
+    const appState = App.addListener('appStateChange', ({ isActive }) => { if (isActive) resume(); });
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
+    return () => {
+      disposed = true;
+      void appState.then(listener => listener.remove());
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
+  }, [native, syncNativeWallet]);
+  useEffect(() => {
     if (!activeProvider?.on) return;
     const onAccountChanged = (key: any) => { const address = key?.toString?.() || nativeAdapter.publicKey?.toString() || null; setPublicKey(address); setConnected(Boolean(address)); persist(address); };
-    const onConnect = () => { const address = nativeAdapter.publicKey?.toString() || browserProvider?.publicKey?.toString() || null; if (address) { setPublicKey(address); setConnected(true); persist(address); } };
+    const onConnect = () => { const address = native ? readNativeAddress() : browserProvider?.publicKey?.toString() || null; if (address) { setPublicKey(address); setConnected(true); void persist(address); } };
     const onDisconnect = () => { setPublicKey(null); setConnected(false); setBalance(null); localStorage.removeItem(STORAGE_KEY); setMessage('Wallet disconnected.'); };
     const providerEvents = activeProvider as any;
     if (!native) providerEvents.on('accountChanged', onAccountChanged);
     providerEvents.on('connect', onConnect); providerEvents.on('disconnect', onDisconnect);
     return () => { if (!native) providerEvents.off?.('accountChanged', onAccountChanged); providerEvents.off?.('connect', onConnect); providerEvents.off?.('disconnect', onDisconnect); };
-  }, [activeProvider, browserProvider, nativeAdapter, persist]);
+  }, [activeProvider, browserProvider, native, nativeAdapter, persist, readNativeAddress]);
 
   const value = useMemo(() => ({ connected, publicKey, walletName: native ? (connected ? 'Mobile wallet' : null) : browserProvider?.isPhantom ? 'Phantom' : publicKey ? 'Solana wallet' : null, network, balance, connecting, message, connect, disconnect, copyAddress, refreshBalance, sendTransaction, clearMessage: () => setMessage(null) }), [balance, browserProvider, connect, connected, connecting, copyAddress, disconnect, native, network, publicKey, refreshBalance, sendTransaction, message]);
   return <SolanaWalletContext.Provider value={value}>{children}</SolanaWalletContext.Provider>;

@@ -9,6 +9,11 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
     cleartext: false,
   },
+  android: {
+    // MWA's official browser transport uses ws://localhost after the wallet
+    // app returns. Capacitor otherwise blocks this mixed-content association.
+    allowMixedContent: true,
+  },
   plugins: {
     SplashScreen: {
       launchAutoHide: true,
