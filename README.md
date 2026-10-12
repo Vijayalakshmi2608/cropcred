@@ -454,7 +454,7 @@ The circuit and key are part of the repository's development/demo ceremony. They
 
 ### Proof test procedure
 
-Run the application, open **Innovation Lab**, load the Economic Passport, choose a proof condition, click **Generate private proof**, and then click **Verify proof locally**. Expected behavior is a Groth16 proof result followed by the message that the proof matches current Passport data. Modify the underlying Passport data or use a stale proof and verification should fail.
+Run the application, open **Innovation Lab**, load the Economic Passport, choose a proof condition, click **Generate private proof**, and then click **Verify proof locally**. Expected behavior is a Groth16 proof result followed by the message that the proof matches current Passport data. Modify the underlying Passport data or use a stale proof and verification should fail. The reproducible CLI suite is `pnpm test:zk`; it covers valid eligibility, valid ineligibility, tampered proofs, malformed witness input, and stale fingerprint detection.
 
 ## Testing and verification
 
@@ -463,13 +463,16 @@ Run the application, open **Innovation Lab**, load the Economic Passport, choose
 ```bash
 pnpm check
 pnpm build
+pnpm test:zk
 git diff --check
-python3 -m py_compile backend/app.py backend/database.py backend/wsgi.py backend/test_startup.py
+python3 -m py_compile backend/app.py backend/database.py backend/wsgi.py backend/test_startup.py backend/test_payments.py
 CROP_CRED_DB_PATH=/tmp/cropcred-test.db \
   PYTHONPATH=backend python3 -m unittest discover -s backend -p 'test_*.py' -v
 ```
 
-The backend test suite covers startup/database behavior and auction-related flows. The database initialization is intended to be idempotent; use a fresh temporary path when testing migrations.
+The backend suite covers startup/database behavior, auction and market intelligence flows, and payment verification security. Payment tests cover wrong network, wrong payer, wrong recipient, wrong amount, failed/unconfirmed transactions, and signature replay. The database initialization is intended to be idempotent; use a fresh temporary path when testing migrations. SQLite also enforces a unique non-null payment transaction signature to protect the one-signature/one-payment invariant during concurrent verification.
+
+The native Android wallet bridge uses Solana's official Mobile Wallet Adapter client library. Phantom requires the app identity icon URI to be relative; CropCred sends `/icon.svg` and keeps the website wallet flow separate. Physical device approval and return must still be tested on the target phone.
 
 ### Representative API flow
 
@@ -513,8 +516,12 @@ The backend rejects offers or awards that exceed the demand or available invento
 | Harvest → listing → order → inventory reduction | Passed in the preceding remote API smoke flow |
 | Public APK HTTP download | Passed; HTTP 200 |
 | Public APK ZIP integrity | Passed |
-| Public APK checksum | Passed; `486054e912215654a215c03a73f62fdbbca61a0d6a8dc063447f2e908a47ac4d` |
+| Public APK checksum | Passed; `48b2223f8e1cb5404c301b55c017ef0b2e08f94e1bd386735b5c9fc9da8f6ab6` |
 | Physical OPPO F9 install and wallet settlement | Not run; device was not attached |
+
+### Submission evidence
+
+The repository includes [`submission-evidence/`](submission-evidence/) with the final audit, architecture/data-flow note, judge demo script, and an explicit physical-device checklist. The evidence distinguishes automated fixture tests from real Devnet transactions and does not claim OPPO F9 validation that was not performed.
 
 ## Troubleshooting
 

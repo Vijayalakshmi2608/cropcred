@@ -359,6 +359,7 @@ def init_db():
         ('buyer-1004', 'The Green Table', 'RESTAURANT', 'VERIFIED'),
         ('buyer-1005', 'Daily Basket', 'RETAILER', 'VERIFIED'),
     ])
+    connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_transaction_signature ON payments(transaction_signature) WHERE transaction_signature IS NOT NULL')
     connection.execute('PRAGMA foreign_keys = ON')
     connection.commit()
     connection.close()

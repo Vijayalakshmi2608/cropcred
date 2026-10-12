@@ -9,6 +9,7 @@
     "start": "NODE_ENV=production node dist/index.js",
     "preview": "vite preview --host",
     "check": "tsc --noEmit",
+    "test:zk": "node tests/zk.test.mjs",
     "format": "prettier --write .",
     "mobile:sync": "pnpm build && pnpm exec cap sync android",
     "mobile:open": "pnpm exec cap open android",
