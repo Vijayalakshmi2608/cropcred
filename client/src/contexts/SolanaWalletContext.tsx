@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { App } from '@capacitor/app';
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { SolanaMobileWalletAdapter, createDefaultAddressSelector, createDefaultAuthorizationResultCache } from '@solana-mobile/wallet-adapter-mobile';
@@ -9,6 +9,7 @@ import { getDevnetRpcUrl } from '../services/solanaPayment';
 type BrowserWalletProvider = { isPhantom?: boolean; isConnected?: boolean; publicKey?: { toString(): string }; network?: string; connect: () => Promise<{ publicKey?: { toString(): string }}>; disconnect: () => Promise<void>; signAndSendTransaction?: (transaction: any) => Promise<{ signature: string }>; on?: (event: string, callback: (...args: any[]) => void) => void; off?: (event: string, callback: (...args: any[]) => void) => void };
 
 declare global { interface Window { solana?: BrowserWalletProvider; } }
+const NativeWallet = registerPlugin<{ connect: () => Promise<{ publicKey: string }>; disconnect: () => Promise<void>; signAndSend: (options: { transaction: string }) => Promise<{ signature: string }> }>('NativeWallet');
 
 type WalletContextValue = { connected: boolean; publicKey: string | null; walletName: string | null; network: 'devnet' | 'wrong-network' | 'unknown'; balance: number | null; connecting: boolean; message: string | null; connect: () => Promise<void>; disconnect: () => Promise<void>; copyAddress: () => Promise<boolean>; refreshBalance: () => Promise<void>; sendTransaction: (transaction: any, connection: Connection) => Promise<string>; clearMessage: () => void; };
 const SolanaWalletContext = createContext<WalletContextValue | null>(null);
@@ -52,7 +53,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
 
   const syncNativeWallet = useCallback(async () => {
     if (!native) return;
-    const address = readNativeAddress();
+    const address = publicKey || readNativeAddress();
     if (address) {
       setPublicKey(address);
       setConnected(true);
@@ -61,7 +62,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     } else if (!nativeAdapter.connected) {
       setConnected(false);
     }
-  }, [native, nativeAdapter, persist, readNativeAddress, refreshBalance]);
+  }, [native, nativeAdapter, persist, publicKey, readNativeAddress, refreshBalance]);
 
   const connect = useCallback(async () => {
     if (!activeProvider) { setMessage('Please install or unlock a compatible Solana wallet.'); return; }
@@ -69,8 +70,8 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     setConnecting(true); setMessage(null);
     try {
       if (native) {
-        await nativeAdapter.connect();
-        const address = readNativeAddress();
+        const nativeResult = await NativeWallet.connect();
+        const address = nativeResult.publicKey || readNativeAddress();
         if (!address) throw new Error('No public address returned');
         setPublicKey(address); setConnected(true); await persist(address); setMessage('Wallet connected on Solana Devnet.');
       } else {
@@ -87,18 +88,22 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
   }, [activeProvider, browserProvider, connecting, native, nativeAdapter, persist, readNativeAddress]);
 
   const disconnect = useCallback(async () => {
-    try { await activeProvider?.disconnect(); } finally { setConnected(false); setPublicKey(null); setBalance(null); await persist(null); setMessage('Wallet disconnected.'); }
+    try { if (native) await NativeWallet.disconnect(); else await activeProvider?.disconnect(); } finally { setConnected(false); setPublicKey(null); setBalance(null); await persist(null); setMessage('Wallet disconnected.'); }
   }, [activeProvider, persist]);
 
   const sendTransaction = useCallback(async (transaction: any, connection: Connection) => {
-    if (native) return nativeAdapter.sendTransaction(transaction, connection, { preflightCommitment: 'confirmed' });
+    if (native) {
+      const bytes = transaction.serialize({ requireAllSignatures: false, verifySignatures: false });
+      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+      return (await NativeWallet.signAndSend({ transaction: btoa(binary) })).signature;
+    }
     if (!browserProvider?.signAndSendTransaction) throw new Error('Your wallet does not support Devnet transaction approval.');
     return (await browserProvider.signAndSendTransaction(transaction)).signature;
   }, [browserProvider, native, nativeAdapter]);
 
   const copyAddress = useCallback(async () => { if (!publicKey) return false; await navigator.clipboard?.writeText(publicKey); setMessage('Wallet address copied.'); return true; }, [publicKey]);
 
-  useEffect(() => { if (publicKey && activeProvider) { setConnected(native ? nativeAdapter.connected : Boolean(browserProvider?.isConnected || browserProvider?.publicKey)); refreshBalance(); } }, [activeProvider, browserProvider, native, nativeAdapter, publicKey, refreshBalance]);
+  useEffect(() => { if (publicKey && activeProvider) { setConnected(native ? true : Boolean(browserProvider?.isConnected || browserProvider?.publicKey)); refreshBalance(); } }, [activeProvider, browserProvider, native, nativeAdapter, publicKey, refreshBalance]);
   useEffect(() => {
     if (!native) return;
     let disposed = false;
