@@ -27,7 +27,7 @@ class NativeWalletPlugin : Plugin() {
         adapter = MobileWalletAdapter(
             ConnectionIdentity(
                 Uri.parse("https://cropcred.onrender.com"),
-                Uri.parse("https://cropcred.onrender.com/icon.svg"),
+                Uri.parse("/icon.svg"),
                 "CropCred"
             )
         )
